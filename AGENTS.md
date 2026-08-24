@@ -23,7 +23,7 @@ nix-shell --run './gradlew :app:lintDebug'
 | `app/build.gradle.kts` | Module build config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35 |
 | `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |
 | `shell.nix` | Dev shell: JDK 17 + Android SDK; every command runs through it |
-| `.github/workflows/` | CI: build on push/PR, dependabot (gradle), stale-issue handling |
+| `.github/workflows/` | CI: build + release on `v*` tags, dependabot (gradle), stale-issue handling |
 | `AGENTS.md` | This file — orientation and mandatory workflow summary |
 | `routes.md` | Per-package reference for the `:app` module |
 | `docs/guides/` | Guides loaded when their trigger fires (see table below) |

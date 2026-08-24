@@ -27,6 +27,12 @@ The debug APK lands in `app/build/outputs/apk/debug/`. With a device connected:
 nix-shell --run './gradlew :app:installDebug'
 ```
 
+## Releases
+
+Pushing a `v*` tag (matching the app `versionName`) builds, verifies and signs the
+release APK — signing needs the keystore secrets configured; without them a GitHub
+Release is published with an unsigned APK.
+
 Agent-facing documentation lives in [`AGENTS.md`](./AGENTS.md) and [`routes.md`](./routes.md).
 
 ## Credits

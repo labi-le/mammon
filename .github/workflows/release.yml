@@ -1,0 +1,91 @@
+name: release
+
+# Builds and publishes the release APK on `v*` tag pushes and manual dispatch.
+# Signing requires the KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS and
+# KEY_PASSWORD secrets; without them the release ships *-unsigned.apk.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify the release tag matches the app versionName
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          vn=$(sed -nE 's/.*versionName = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' app/build.gradle.kts)
+          echo "tag=${tag} versionName=${vn}"
+          if [ "${tag}" != "${vn}" ]; then
+            echo "::error::release tag v${tag} does not match app versionName ${vn}; bump versionName in app/build.gradle.kts to match the tag before releasing."
+            exit 1
+          fi
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Test and lint
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
+
+      - name: Assemble release APK
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Sign and collect the APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bt="${ANDROID_HOME}/build-tools/35.0.0"
+          mkdir -p dist
+          in="$(ls app/build/outputs/apk/release/*.apk | head -1)"
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > /tmp/release.jks
+            out="dist/mammon-${GITHUB_REF_NAME#v}.apk"
+            "$bt/zipalign" -p -f 4 "$in" "$out"
+            "$bt/apksigner" sign \
+              --ks /tmp/release.jks --ks-pass "env:KEYSTORE_PASSWORD" \
+              --ks-key-alias "${KEY_ALIAS}" --key-pass "env:KEY_PASSWORD" "$out"
+            "$bt/apksigner" verify "$out"
+          else
+            echo "::warning::no KEYSTORE_BASE64 secret; shipping an UNSIGNED APK"
+            cp "$in" "dist/mammon-${GITHUB_REF_NAME#v}-unsigned.apk"
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -30,15 +30,18 @@ nix-shell --run './gradlew :app:lintDebug'
 
 ## Current intent
 
-mammon is an Android app whose goal is mounting NFS storage on a device, inspired by
-[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). Today it is a SKELETON ONLY:
-a single `MainActivity` showing a placeholder view. No mounting is implemented.
+mammon is an Android app for reading NFS storage on a device, inspired by
+[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.2.0 implements two of
+the three directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 
-The mount design is deliberately UNDECIDED. easysshfs mounts SSH storage by driving a
-bundled prebuilt binary through root; whether mammon uses a kernel NFS client, a
-userspace daemon over `/dev/fuse`, or a rootless DocumentsProvider is an open question
-with real blockers on each side — see [`docs/guides/architecture.md`](./docs/guides/architecture.md)
-before proposing or assuming any of the three. Do not implement against one silently.
+- **Primary — rootless SAF browsing** (direction C): `NfsDocumentsProvider` exposes the
+  configured export to any file manager over `com.emc.ecs:nfs-client` (NFSv3 + mountd).
+- **Root option — kernel mount** (direction A, best-effort): `RootMount` runs
+  `mount -t nfs` through `su --mount-master`; it reports plainly when the kernel lacks
+  NFS support. Direction B stays documented as future work.
+
+Out of scope so far: provider-side writes/rename/delete, Kerberos/AUTH_SEC, foreground
+services, boot receivers, automount-on-boot, caching layers, NFSv4.
 
 ## Verification expectations
 

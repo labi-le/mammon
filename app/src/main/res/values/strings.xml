@@ -1,3 +1,33 @@
 <resources>
     <string name="app_name">Mammon</string>
+
+    <string name="saf_title">NFS share (SAF)</string>
+    <string name="hint_host">Server host or IP</string>
+    <string name="hint_export">Export path, e.g. /export/data</string>
+    <string name="hint_port">Port (default 2049)</string>
+    <string name="save">Save</string>
+    <string name="open_files">Open in Files</string>
+    <string name="saved_ok">Saved: %1$s</string>
+    <string name="probing">Checking the share…</string>
+    <string name="probe_ok">Share reachable — ready to open.</string>
+    <string name="probe_fail">Share not reachable. Check host/export/network.</string>
+    <string name="no_file_manager">No file manager found to open the share.</string>
+
+    <string name="root_title">Kernel mount (requires root)</string>
+    <string name="hint_mountpoint">Mountpoint, e.g. /mnt/nas</string>
+    <string name="mount">Mount</string>
+    <string name="unmount">Unmount</string>
+    <string name="working">Working…</string>
+
+    <string name="mounted_state">Mounted (%1$s) at %2$s</string>
+    <string name="not_mounted_state">Not mounted.</string>
+    <string name="unknown_state">Mount state unknown (cannot read the global mount table).</string>
+    <string name="not_mounted_after_mount">Mount command succeeded, but the share is not visible in the global mount table.</string>
+    <string name="err_no_config">No NFS server configured yet. Save host and export first.</string>
+    <string name="err_timeout">The server did not answer in time.</string>
+    <string name="err_bad_config">Need a host and an export path like /export/data.</string>
+    <string name="err_bad_mountpoint">Enter a mountpoint path first.</string>
+    <string name="err_unreachable">Connection refused — is the NFS server up?</string>
+    <string name="err_file_too_large">File exceeds the 64 MiB read limit of this provider.</string>
+    <string name="err_generic">NFS error: </string>
 </resources>

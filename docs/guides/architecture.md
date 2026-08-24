@@ -7,9 +7,17 @@
 
 ## Status
 
-mammon mounts nothing yet. The sections below are the input to that decision: how
-[easysshfs](https://github.com/bobrofon/easysshfs) does it (verified from its repository),
-and the three directions an NFS equivalent could take. No direction has been picked.
+Direction C — the rootless DocumentsProvider — was PICKED on 2026-08-24 and is the
+primary way mammon exposes NFS storage: the configured export shows up in any SAF file
+manager through `NfsDocumentsProvider` (authority `app.mammon.nfs`), read-only.
+Direction A — kernel NFS via `mount -t nfs` under `su` — is implemented alongside it as
+a best-effort option (`RootMount`): it works only on devices whose kernel has NFS
+support and whose su setup lets the mount land in the global namespace; when the kernel
+lacks nfs.ko the UI says so plainly. Direction B remains below as a documented future
+option; nothing of it is built.
+
+What follows the status lines is the original decision input, kept because it explains
+the shape of what was built and why B is still on the table.
 
 ## How easysshfs works
 

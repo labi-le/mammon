@@ -5,8 +5,10 @@ Mount NFS storage on an Android device. Inspired by
 
 ## Status
 
-Early scaffold. The app builds and launches a placeholder screen; nothing mounts yet,
-and the design direction (see `docs/guides/architecture.md`) is deliberately undecided.
+v0.2.0: browse NFS shares via SAF (rootless) and optionally kernel-mount them with
+root. The SAF side (`NfsDocumentsProvider`) is the primary surface; the root mount is
+best-effort — it needs a kernel with NFS support and a su setup that mounts into the
+global namespace. Design history in `docs/guides/architecture.md`.
 
 ## Build
 

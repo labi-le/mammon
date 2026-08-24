@@ -44,18 +44,25 @@ data class ExportSpec(
             return null
         }
 
-        /** "[v6]" keeps its colons; otherwise a trailing :digits is the port. */
+        /**
+         * "[v6]" keeps its colons; otherwise a trailing :digits is the port.
+         * Exactly one trailing empty segment is forgiven, so the legacy
+         * string-built "host::/export" shape degrades to host ":" instead of
+         * accreting another colon on every save.
+         */
         private fun splitPort(head: String): Pair<String, Int>? {
             if (!head.endsWith("]")) {
-                val c = head.lastIndexOf(':')
+                val body = head.removeSuffix(":")
+                val c = body.lastIndexOf(':')
                 if (c > 0) {
-                    val digits = head.substring(c + 1)
+                    val digits = body.substring(c + 1)
                     if (digits.isNotEmpty() && digits.all { it.isDigit() }) {
                         val p = digits.toInt()
                         if (p !in 1..MAX_PORT) return null
-                        return head.substring(0, c) to p
+                        return body.substring(0, c) to p
                     }
                 }
+                return body to DEFAULT_PORT
             }
             return head to DEFAULT_PORT
         }

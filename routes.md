@@ -17,8 +17,8 @@ Config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35.
 | `Prefs.kt` | SharedPreferences: host, export, port (default 2049), last mountpoint; `spec()` re-parses into an `ExportSpec`. |
 | `ExportSpec.kt` | Parses "host[:port]:/export"; IPv6 literals bracketed; port range and traversal rejected. |
 | `PathCodec.kt` | documentId <-> export-absolute path; rejects "..", empty segments, leading/trailing slashes. Every provider id passes through it. |
-| `NfsAccess.kt` | NFSv3 session wrapper over `com.emc.ecs:nfs-client` — stat, list, capped read stream. Per-call connect; see class comment for why. |
-| `NfsDocumentsProvider.kt` | SAF root for the configured export, read-only; every NFS call bounded (~15 s) via coroutine timeout, openDocument streams through a reliable pipe with a 64 MiB cap. |
+| `NfsAccess.kt` | NFSv3 operations over `com.emc.ecs:nfs-client` — stat, list (one READDIRPLUS loop carrying child attributes), capped read stream. One long-lived session per config; the provider rebuilds it when the config changes. |
+| `NfsDocumentsProvider.kt` | SAF root for the configured export, read-only; every NFS call bounded (~15 s) via coroutine timeout; one long-lived connection per config (`nfsInstance`), openDocument streams through a reliable pipe with a 64 MiB cap. |
 | `MountsParser.kt` / `RootMount.kt` | `/proc/mounts` line parser; kernel mounts via `su --mount-master -c` (nsenter fallback), state from /proc/1/mounts so the check matches the global namespace the mount landed in. |
 
 Unit tests (`app/src/test/kotlin/app/mammon/`, JUnit4, no Robolectric): `PathCodecTest`,

@@ -2,6 +2,8 @@ package app.mammon
 
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 /**
  * Kernel NFS mounts driven through `su`.
@@ -15,12 +17,24 @@ import java.io.IOException
  */
 object RootMount {
 
-    data class Result(val ok: Boolean, val message: String)
+    data class Result(
+        val ok: Boolean,
+        val message: String,
+
+        /** Post-command state, classified from the /proc/1/mounts text captured by the same su run. */
+        val stateAfter: State = State.UNKNOWN,
+    )
 
     enum class State { MOUNTED_NFS, NOT_MOUNTED, UNKNOWN }
 
     fun mountedState(mountpoint: String): State {
         val mountsText = runSu("cat /proc/1/mounts").stdout ?: return State.UNKNOWN
+        return mountedState(mountpoint, mountsText)
+    }
+
+    /** Overload so callers that just ran a script can classify from the captured
+     *  /proc/1/mounts text instead of spawning another su. */
+    fun mountedState(mountpoint: String, mountsText: String): State {
         if (mountsText.isBlank()) return State.UNKNOWN
         val entry = MountsParser.parse(mountsText).find {
             it.mountPoint == mountpoint && (it.fsType == "nfs" || it.fsType == "nfs4")
@@ -35,14 +49,15 @@ object RootMount {
     fun mount(host: String, export: String, port: Int, mountpoint: String): Result {
         val script = """
             mkdir -p ${quote(mountpoint)} &&
-            mount -t nfs -o nolock,port=$port,tcp,vers=3 ${quote("$host:$export")} ${quote(mountpoint)}
+            mount -t nfs -o nolock,port=$port,tcp,vers=3 ${quote("$host:$export")} ${quote(mountpoint)} &&
+            cat /proc/1/mounts
         """.trimIndent()
         val r = runSu(script)
         return when {
-            r.code == 0 -> Result(true, "mounted at $mountpoint")
+            r.code == 0 -> Result(true, "mounted at $mountpoint").withState(mountpoint, r.stdout)
             isUnknownSuFlag(r.stderr) -> {
-                val (c2, _, e2) = runSuViaNsenter(script)
-                if (c2 == 0) Result(true, "mounted at $mountpoint")
+                val (c2, out2, e2) = runSuViaNsenter(script)
+                if (c2 == 0) Result(true, "mounted at $mountpoint").withState(mountpoint, out2)
                 else Result(false, "mount failed: ${firstLine(e2) ?: "exit $c2"}")
             }
             r.stderr.contains("no such device", true) ||
@@ -56,17 +71,21 @@ object RootMount {
     }
 
     fun unmount(mountpoint: String): Result {
-        val r = runSu("umount ${quote(mountpoint)}")
+        val script = "umount ${quote(mountpoint)} && cat /proc/1/mounts"
+        val r = runSu(script)
         return when {
-            r.code == 0 -> Result(true, "unmounted $mountpoint")
+            r.code == 0 -> Result(true, "unmounted $mountpoint").withState(mountpoint, r.stdout)
             isUnknownSuFlag(r.stderr) -> {
-                val (c2, _, e2) = runSuViaNsenter("umount ${quote(mountpoint)}")
-                if (c2 == 0) Result(true, "unmounted $mountpoint")
+                val (c2, out2, e2) = runSuViaNsenter(script)
+                if (c2 == 0) Result(true, "unmounted $mountpoint").withState(mountpoint, out2)
                 else classifyUmountError(c2, e2)
             }
             else -> classifyUmountError(r.code, r.stderr, r.stdout)
         }
     }
+
+    private fun Result.withState(mountpoint: String, mountsText: String?): Result =
+        copy(stateAfter = mountedState(mountpoint, mountsText.orEmpty()))
 
     private fun classifyUmountError(code: Int, err: String?, out: String? = null): Result {
         val e = err.orEmpty()
@@ -106,13 +125,33 @@ object RootMount {
                 text.contains("usage:", ignoreCase = true)
             )
 
+    private fun quote(s: String): String = "'${s.replace("'", "'\\''")}'"
+
+    private fun firstLine(s: String?): String? =
+        s?.lineSequence()?.firstOrNull { it.isNotBlank() }
+
     private fun exec(vararg cmd: String): SuResult = try {
         val proc = ProcessBuilder(*cmd)
             .redirectErrorStream(false)
             .start()
-        val err = proc.errorStream.bufferedReader().use { it.readText() }
-        val out = proc.inputStream.bufferedReader().use { it.readText() }
-        SuResult(proc.waitFor(), out.ifBlank { null }, err)
+        // Both pipes are drained concurrently BEFORE waiting on exit: reading them
+        // sequentially deadlocks when the child fills the stdout pipe while stderr
+        // is silent.
+        val outReader = proc.inputStream.bufferedReader()
+        val errReader = proc.errorStream.bufferedReader()
+        val outFuture = java.util.concurrent.CompletableFuture.supplyAsync {
+            outReader.use { it.readText() }
+        }
+        val errText = errReader.use { it.readText() }
+        if (!proc.waitFor(SU_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            runCatching { proc.destroyForcibly() }
+            SuResult(SU_TIMED_OUT_CODE, null, "su timed out")
+        } else {
+            val outText = runCatching {
+                outFuture.get(SU_TIMEOUT_SECONDS * 2, TimeUnit.SECONDS)
+            }.getOrNull()
+            SuResult(proc.exitValue(), outText?.takeIf { it.isNotBlank() }, errText)
+        }
     } catch (e: IOException) {
         SuResult(127, null, e.message ?: "su not available")
     } catch (e: InterruptedException) {
@@ -120,8 +159,9 @@ object RootMount {
         SuResult(130, null, "interrupted")
     }
 
-    private fun firstLine(s: String?): String? =
-        s?.lineSequence()?.firstOrNull { it.isNotBlank() }
+    /** A pending su authorization dialog must not hold the UI hostage forever. */
+    private const val SU_TIMEOUT_SECONDS = 15L
 
-    private fun quote(s: String): String = "'${s.replace("'", "'\\''")}'"
+    /** Conventionally "timeout"; surfaced verbatim so callers can classify it. */
+    private const val SU_TIMED_OUT_CODE = 124
 }

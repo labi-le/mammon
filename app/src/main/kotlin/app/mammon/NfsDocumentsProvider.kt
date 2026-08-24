@@ -22,12 +22,15 @@ import kotlinx.coroutines.withTimeout
  * Exposes the configured NFS export through SAF, read-only.
  *
  * documentId = export-absolute path with "/" separators (see [PathCodec]). Every NFS
- * round trip is bounded by [NFS_TIMEOUT_MS]; per-call connect makes a cold browse of
- * a large directory noticeably slow — accepted for v0.2 (see NfsAccess).
+ * round trip is bounded by [NFS_TIMEOUT_MS]; one long-lived connection per config is
+ * kept in [nfsInstance] (see NfsAccess).
  */
 class NfsDocumentsProvider : DocumentsProvider() {
 
-    private val scope = CoroutineScope(Dispatchers.IO)
+
+    /** Pumps are bounded so one misbehaving client cannot monopolize IO threads;
+     *  residual leak: a client holding its fd open keeps its pump alive. */
+    private val pumpScope = CoroutineScope(Dispatchers.IO.limitedParallelism(4))
 
     override fun onCreate(): Boolean = true
 
@@ -47,16 +50,17 @@ class NfsDocumentsProvider : DocumentsProvider() {
 
     private var cachedAccess: Pair<ExportSpec, NfsAccess>? = null
 
-    @Synchronized
     private fun nfsInstance(): NfsAccess {
         val s = spec() ?: throw FileNotFoundException(context!!.getString(R.string.err_no_config))
-        cachedAccess?.let { (spec, access) ->
-            if (spec == s) return access
-            runCatching { access.close() }
+        synchronized(this) {
+            cachedAccess?.let { (spec, access) ->
+                if (spec == s) return access
+                runCatching { access.close() }
+            }
+            val access = NfsAccess(s)
+            cachedAccess = s to access
+            return access
         }
-        val access = NfsAccess(s)
-        cachedAccess = s to access
-        return access
     }
 
     override fun queryRoots(projection: Array<out String>?): Cursor {
@@ -124,25 +128,26 @@ class NfsDocumentsProvider : DocumentsProvider() {
     ): ParcelFileDescriptor {
         require(mode == "r") { "only read-only mode is supported" }
 
+        signal?.throwIfCancellationRequestedCompat()
         val input = runBlocking {
             try {
                 withTimeout(NFS_TIMEOUT_MS) {
                     val access = nfsInstance()
-                    access.stat(documentId)
-                        ?: throw FileNotFoundException("no such document: $documentId")
+                    signal?.throwIfCancellationRequestedCompat()
                     access.streamFor(documentId)
                 }
             } catch (e: Exception) {
                 throw FileNotFoundException(readableMessage(e))
             }
         }
+        signal?.throwIfCancellationRequestedCompat()
 
         val (readSide, writeSide) = ParcelFileDescriptor.createReliablePipe()
-        scope.launch {
+        pumpScope.launch {
             val sink = ParcelFileDescriptor.AutoCloseOutputStream(writeSide)
             try {
                 var sent = 0L
-                val buf = ByteArray(64 * 1024)
+                val buf = ByteArray(NfsAccess.READ_CHUNK)
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
@@ -191,17 +196,22 @@ class NfsDocumentsProvider : DocumentsProvider() {
             e.message?.contains("timed out", ignoreCase = true) == true ||
                 e.message?.contains("timeout", ignoreCase = true) == true ->
                 context!!.getString(R.string.err_timeout)
-            e.message?.contains("Connection refused", ignoreCase = true) == true ->
+            e.message?.contains("Connection refused", ignoreCase = true) == true ||
+                e.message?.contains("waiting for connection", ignoreCase = true) == true ->
                 context!!.getString(R.string.err_unreachable)
             e is java.util.concurrent.TimeoutException ->
                 context!!.getString(R.string.err_timeout)
-            else -> context!!.getString(R.string.err_generic) + (e.message ?: e.javaClass.simpleName)
+            else -> context!!.getString(R.string.err_generic, e.message ?: e.javaClass.simpleName)
         }
         return msg.substringBefore('\n')
     }
 
+    private fun CancellationSignal.throwIfCancellationRequestedCompat() {
+        if (isCanceled) throw android.os.OperationCanceledException()
+    }
+
     override fun shutdown() {
-        scope.cancel()
+        pumpScope.cancel()
         synchronized(this) {
             cachedAccess?.second?.let { runCatching { it.close() } }
             cachedAccess = null

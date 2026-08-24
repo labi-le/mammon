@@ -15,7 +15,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Build and lint
+      - name: Build, lint and test
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug :app:lintDebug
+          ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug

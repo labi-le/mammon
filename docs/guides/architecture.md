@@ -2,8 +2,8 @@
 
 > **When to read this:** before anything touching the mount design, a service,
 > receiver, or provider, permissions, or when asking "why is it built this way".
-> Everything here about mammon's future shape is UNDECIDED; this guide records what is
-> known, not what was chosen.
+> The Status section records what was chosen; what follows it is the original
+> decision input.
 
 ## Status
 
@@ -40,10 +40,11 @@ The transferable lesson: on stock Android a real POSIX mount means root plus a d
 and everything user-visible (foreground notification, boot restore) hangs off a service
 lifecycle, not off activity state.
 
-## Design directions for NFS — undecided
+## Design directions — C and A chosen, B open
 
-Each direction below is open. Blockers are stated so they cannot be rediscovered as
-surprises mid-implementation.
+Directions C and A are shipped (see Status); only direction B below remains open as
+future work. Blockers are stated so they cannot be rediscovered as surprises
+mid-implementation.
 
 ### Option A — root + kernel NFS client (`mount -t nfs`)
 

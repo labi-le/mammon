@@ -18,7 +18,7 @@ nix-shell --run './gradlew :app:lintDebug'
 | `settings.gradle.kts` | Gradle settings; registers the `:app` module |
 | `build.gradle.kts` | Root build script; plugin versions |
 | `app/` | The single module: application code, manifest, resources |
-| `app/src/main/kotlin/app/mammon/` | Kotlin sources (`MainActivity.kt`) |
+| `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFS access layer, root-mount plumbing, prefs/spec parsing |
 | `app/src/main/res/` | Resources: M3 theme (`Theme.Mammon`), strings, adaptive launcher icons |
 | `app/build.gradle.kts` | Module build config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35 |
 | `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |

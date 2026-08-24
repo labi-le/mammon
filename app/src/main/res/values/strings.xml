@@ -1,13 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Mammon</string>
 
     <string name="saf_title">NFS share (SAF)</string>
+    <string name="saf_caption">Saved once, the share appears in any file manager.</string>
     <string name="hint_host">Server host or IP</string>
     <string name="hint_export">Export path, e.g. /export/data</string>
     <string name="hint_port">Port (default 2049)</string>
     <string name="save">Save</string>
     <string name="open_files">Open in Files</string>
     <string name="saved_ok">Saved: %1$s</string>
+    <string name="checking_saved">Checking saved share…</string>
     <string name="probing">Checking the share…</string>
     <string name="probe_ok">Share reachable — ready to open.</string>
     <string name="probe_fail">Share not reachable. Check host/export/network.</string>
@@ -26,8 +29,11 @@
     <string name="err_no_config">No NFS server configured yet. Save host and export first.</string>
     <string name="err_timeout">The server did not answer in time.</string>
     <string name="err_bad_config">Need a host and an export path like /export/data.</string>
-    <string name="err_bad_mountpoint">Enter a mountpoint path first.</string>
+    <string name="err_bad_mountpoint_absolute">Enter an absolute mountpoint path starting with /.</string>
+    <string name="err_field_host">Enter the server host or IP.</string>
+    <string name="err_field_export">Enter an export path starting with /.</string>
+    <string name="err_field_port">Port must be 1–65535.</string>
     <string name="err_unreachable">Connection refused — is the NFS server up?</string>
     <string name="err_file_too_large">File exceeds the 64 MiB read limit of this provider.</string>
-    <string name="err_generic">NFS error: </string>
+    <string name="err_generic">NFS error: %1$s</string>
 </resources>

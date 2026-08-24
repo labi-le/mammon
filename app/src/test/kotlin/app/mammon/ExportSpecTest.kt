@@ -68,4 +68,14 @@ class ExportSpecTest {
         assertEquals(12049, s.port)
         assertEquals("/media/docs", s.export)
     }
+
+    @Test fun `empty middle segment degrades to no port`() {
+        // MainActivity once built "host::/x" strings; splitPort strips ONE trailing
+        // empty segment so such input parses as host ":" instead of failing or
+        // accreting colons.
+        val s = ExportSpec.parse("h::/x")!!
+        assertEquals("h", s.host)
+        assertEquals(2049, s.port)
+        assertEquals("/x", s.export)
+    }
 }

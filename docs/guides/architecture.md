@@ -1,0 +1,81 @@
+# architecture — mounting NFS on Android
+
+> **When to read this:** before anything touching the mount design, a service,
+> receiver, or provider, permissions, or when asking "why is it built this way".
+> Everything here about mammon's future shape is UNDECIDED; this guide records what is
+> known, not what was chosen.
+
+## Status
+
+mammon mounts nothing yet. The sections below are the input to that decision: how
+[easysshfs](https://github.com/bobrofon/easysshfs) does it (verified from its repository),
+and the three directions an NFS equivalent could take. No direction has been picked.
+
+## How easysshfs works
+
+easysshfs mounts SSH storage on Android with this shape:
+
+- **Root access required.** The app drives a bundled, prebuilt `sshfs` binary through
+  `su`; it never implements the filesystem in-process.
+- **Bundled binaries come from outside the app build** — the author ships them via a
+  separate buildroot-based releases repository, so the APK build itself needs no native
+  toolchain.
+- **A foreground service carries the mount session**, declared with
+  `foregroundServiceType="connectedDevice"`, so the mount survives while its UI is gone.
+- **`OnBootReceiver` remounts after `BOOT_COMPLETED`**, so configured mounts return on
+  reboot without opening the app.
+- **Permissions**: `INTERNET`, network/WIFI state, `POST_NOTIFICATIONS`,
+  `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_CONNECTED_DEVICE`. Pure Kotlin, classic
+  Views, published on F-Droid and Play under MIT.
+
+The transferable lesson: on stock Android a real POSIX mount means root plus a daemon,
+and everything user-visible (foreground notification, boot restore) hangs off a service
+lifecycle, not off activity state.
+
+## Design directions for NFS — undecided
+
+Each direction below is open. Blockers are stated so they cannot be rediscovered as
+surprises mid-implementation.
+
+### Option A — root + kernel NFS client (`mount -t nfs`)
+
+Run `busybox mount -t nfs ...` through `su`.
+
+- **Blocker:** most stock kernels ship without `nfs.ko`, and module loading is usually
+  blocked (no `/system/lib/modules` entry, locked bootloader, verified boot). Whether it
+  works depends entirely on the specific device/kernel, which makes "requires root" into
+  "requires root AND a custom kernel" for many users.
+
+### Option B — root + userspace daemon over `/dev/fuse`
+
+Ship an NFS client binary (or library) that talks FUSE, drive it through `su` like
+easysshfs drives `sshfs`.
+
+- **Shape:** closest to easysshfs — same foreground service, same boot receiver, same
+  bundled-binary question (where do prebuilt NFS-client binaries come from?).
+- **Blocker:** requires root for the FUSE device and the mount syscall; and someone must
+  produce/maintain a working Android NFS-client binary, which is exactly the burden
+  easysshfs moved out of its repo.
+
+### Option C — rootless DocumentsProvider
+
+Expose the NFS share through a `DocumentsProvider`; files appear in SAF file pickers.
+
+- **Blocker:** no real POSIX mount. Other apps see only what they explicitly request via
+  SAF; no arbitrary path access, no mmap, weaker semantics than a filesystem. In exchange
+  it runs without root at all.
+
+## What follows regardless of direction
+
+Whichever direction wins, the easysshfs shape predicts the component set — all still
+unbuilt:
+
+- a foreground service owning the mount session (type and permission set depend on the
+  direction);
+- possibly a boot receiver restoring configured mounts;
+- permission declarations beyond today's `INTERNET`;
+- a policy decision on bundled binaries vs. building them in-tree.
+
+When a direction IS picked, update this guide's Status section and `routes.md`'s Planned
+section in the same change — a guide describing a dead option as live is worse than no
+guide.

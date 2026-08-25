@@ -18,6 +18,15 @@ mounts into the global namespace; the FUSE view is read-only and synthesises own
 and permissions. Design history and the full list of narrowings in
 `docs/guides/architecture.md`.
 
+## Kernel without NFS/FUSE?
+
+If `/proc/filesystems` lists neither `fuse` nor any `nfs` flavour, try the
+[Mammon FS Loader](./magisk-module/) Magisk module: it finds and loads every
+fuse/nfs kernel module present on the device at boot, logs everything, and
+lets the Mount ladder succeed afterwards. Honest limit: it can only load
+modules the device already ships — a kernel with the support compiled out
+needs a custom kernel.
+
 ## Build
 
 The toolchain (JDK 17, Android SDK 35) comes from the nix shell, so always build

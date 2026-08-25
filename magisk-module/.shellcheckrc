@@ -1,0 +1,9 @@
+# Sourced library and on-device paths ($MODDIR/fslib.sh, util_functions.sh):
+# shellcheck cannot follow either.
+disable=SC1091
+
+# update-binary ships verbatim from topjohnwu/Magisk scripts/module_installer.sh;
+# its unused OUTFD/ZIPFILE assignments and unquoted MAGISK_VER_CODE test are
+# upstream text we must not edit.
+disable=SC2034
+disable=SC2086

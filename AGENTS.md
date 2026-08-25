@@ -24,6 +24,7 @@ nix-shell --run './gradlew :app:lintDebug'
 | `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |
 | `shell.nix` | Dev shell: JDK 17 + Android SDK; every command runs through it |
 | `.github/workflows/` | CI: build + release on `v*` tags, dependabot (gradle), stale-issue handling |
+| `magisk-module/` | Standalone Magisk module (`mammon_fsloader`): loads fuse/nfs kernel modules at boot, logs to `load.log`; packaged separately as `mammon-fsloader-*.zip` |
 | `AGENTS.md` | This file — orientation and mandatory workflow summary |
 | `routes.md` | Per-package reference for the `:app` module |
 | `docs/guides/` | Guides loaded when their trigger fires (see table below) |

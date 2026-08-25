@@ -52,6 +52,20 @@ root call) means the support ships as a module but would not load — its own me
 since the fix differs from every other cause; an empty listing keeps the old
 "neither NFS client nor FUSE" wording for kernels that truly lack both.
 
+The app-side preload has two structural limits, which is why the companion
+Magisk module `magisk-module/` (`mammon_fsloader`) exists. It runs only when
+the user presses Mount, so nothing loaded it at boot, and it shells out to
+`modprobe`, whose default search tree `/lib/modules/$(uname -r)` is empty on
+stock Android — there is no depmod database, and the `.ko` files actually live
+under `/system*/lib*/modules` and `/vendor*/lib*/modules`, reachable only by
+`insmod` with a full path. The module instead scans those directories itself
+at every boot, `insmod`s each fuse/nfs candidate directly (no dependency
+resolution needed when you control the file list), retries failures once
+after successes, and appends every step to its own `load.log`. That log is
+the definitive oracle for "does this device ship the support as files": it
+lists exactly what was found, what loaded or was refused, and what
+`/proc/filesystems` registered afterwards.
+
 ### Why the FUSE rung is pure Kotlin and ships no binary
 
 The obvious design — a JVM process that mounts `/dev/fuse` itself, or that hands the

@@ -1,14 +1,18 @@
 package app.mammon
 
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.view.View
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.runBlocking
@@ -37,6 +41,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var unmountBtn: Button
     private lateinit var mountStatus: TextView
 
+    private lateinit var scanButton: MaterialButton
+    private lateinit var scanResults: LinearLayout
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -53,9 +60,11 @@ class MainActivity : AppCompatActivity() {
         mountpointEdit = findViewById(R.id.mountpoint)
         saveButton = findViewById(R.id.save)
         openButton = findViewById(R.id.open_files)
+        mountStatus = findViewById(R.id.mount_status)
+        scanButton = findViewById(R.id.scan_button)
+        scanResults = findViewById(R.id.scan_results)
         mountBtn = findViewById(R.id.mount_button)
         unmountBtn = findViewById(R.id.unmount_button)
-        mountStatus = findViewById(R.id.mount_status)
 
         hostEdit.setText(prefs.host)
         exportEdit.setText(prefs.export)
@@ -66,15 +75,16 @@ class MainActivity : AppCompatActivity() {
         bindClearOnType(exportLayout, exportEdit)
         bindClearOnType(portLayout, portEdit)
         bindClearOnType(mountpointLayout, mountpointEdit)
-
         saveButton.setOnClickListener { onSave() }
         openButton.setOnClickListener { onOpenInFiles() }
         mountBtn.setOnClickListener { onMount(true) }
         unmountBtn.setOnClickListener { onMount(false) }
+        scanButton.setOnClickListener { onScan() }
         saveButton.isEnabled = !PROBE_IN_FLIGHT.get()
         openButton.isEnabled = false
         mountBtn.isEnabled = !MOUNT_IN_FLIGHT.get()
         unmountBtn.isEnabled = !MOUNT_IN_FLIGHT.get()
+        scanButton.isEnabled = !SCAN_IN_FLIGHT.get()
 
         if (prefs.spec() != null && !PROBE_IN_FLIGHT.get()) {
             status.setText(R.string.checking_saved)
@@ -213,6 +223,46 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun onScan() {
+        scanButton.isEnabled = false
+        scanResults.removeAllViews()
+        scanResults.visibility = View.GONE
+        SCAN_IN_FLIGHT.set(true)
+        thread(name = "nfs-scan") {
+            val subnet = NfsScanner.currentSubnet(getSystemService(ConnectivityManager::class.java))
+            val found = if (subnet == null) null
+            else NfsScanner.scan(NfsScanner.addresses(subnet.first, subnet.second))
+            runOnUiThread { renderScan(found ?: emptyList(), subnet != null) }
+        }
+    }
+
+    /** Runs on the UI thread; [hasNetwork] false means no scannable local network. */
+    private fun renderScan(found: List<String>, hasNetwork: Boolean) {
+        SCAN_IN_FLIGHT.set(false)
+        scanButton.isEnabled = true
+        if (!hasNetwork) {
+            status.setText(R.string.scan_no_network)
+            return
+        }
+        if (found.isEmpty()) {
+            status.setText(R.string.scan_empty)
+            return
+        }
+        for (host in found) {
+            val chip = MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle)
+            chip.text = host
+            chip.isAllCaps = false
+            chip.setOnClickListener {
+                hostEdit.setText(host)
+                scanResults.removeAllViews()
+                scanResults.visibility = View.GONE
+            }
+            scanResults.addView(chip)
+        }
+        scanResults.visibility = View.VISIBLE
+        status.setText(R.string.scan_done)
+    }
+
     companion object {
         const val AUTHORITY = "app.mammon.nfs"
         const val PROBE_TIMEOUT_MS = 15_000L
@@ -221,6 +271,7 @@ class MainActivity : AppCompatActivity() {
          *  state instead of re-enabling buttons while work is still running. */
         private val MOUNT_IN_FLIGHT = AtomicBoolean(false)
         private val PROBE_IN_FLIGHT = AtomicBoolean(false)
+        private val SCAN_IN_FLIGHT = AtomicBoolean(false)
         val PROBE_GENERATION = AtomicInteger(0)
     }
 }

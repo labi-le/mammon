@@ -19,15 +19,16 @@ Config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35.
 | `PathCodec.kt` | documentId <-> export-absolute path; rejects "..", empty segments, leading/trailing slashes. Every provider id passes through it. |
 | `NfsAccess.kt` | NFSv3 operations over `com.emc.ecs:nfs-client` — stat, list (one READDIRPLUS loop carrying child attributes; symlinks and special files are not listed), capped read stream. One long-lived session per config; the provider rebuilds it when the config changes. |
 | `NfsDocumentsProvider.kt` | SAF root for the configured export, read-only; every NFS call bounded (~15 s) via coroutine timeout; one long-lived connection per config (`nfsInstance`), openDocument streams through a reliable pipe with a 64 MiB cap. |
+| `NfsScanner.kt` | Discovery: expands the current IPv4 subnet into candidates (`addresses`, capped to the baseIp's /24, network+broadcast excluded) and probes TCP 2049 in parallel (`scan`); `currentSubnet` reads the active network's IPv4 LinkAddress. |
 | `MountsParser.kt` / `RootMount.kt` | `/proc/mounts` line parser; kernel mounts via `su --mount-master -c` (nsenter fallback), state from /proc/1/mounts so the check matches the global namespace the mount landed in. |
 
 Unit tests (`app/src/test/kotlin/app/mammon/`, JUnit4, no Robolectric): `PathCodecTest`,
-`ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `NfsListFilterTest`,
-`NfsListNullAttrsFallbackTest`, `ManifestGuardTest`.
+`ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `NfsListFilterTest`, `NfsListNullAttrsFallbackTest`, `ManifestGuardTest`, `NfsScannerTest`.
 
 No services or receivers exist yet.
 
-- Permission: `android.permission.INTERNET` (only).
+- Permission: `android.permission.INTERNET`, `android.permission.ACCESS_NETWORK_STATE`
+  (LinkProperties for discovery).
 - `application`: `allowBackup=false`, theme `Theme.Mammon`.
 - One exported activity `MainActivity` with the `MAIN`/`LAUNCHER` intent filter.
 - One exported DocumentsProvider `app.mammon.nfs` (`NfsDocumentsProvider`) guarded by

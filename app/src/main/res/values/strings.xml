@@ -14,6 +14,10 @@
     <string name="probing">Checking the share…</string>
     <string name="probe_ok">Share reachable — ready to open.</string>
     <string name="probe_fail">Share not reachable. Check host/export/network.</string>
+    <string name="scan_button">Find servers</string>
+    <string name="scan_empty">No servers found.</string>
+    <string name="scan_done">Servers found — tap one to fill.</string>
+    <string name="scan_no_network">Not on a local network — connect to Wi-Fi and try again.</string>
     <string name="no_file_manager">No file manager found to open the share.</string>
 
     <string name="root_title">Kernel mount (requires root)</string>

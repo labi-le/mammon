@@ -2,6 +2,7 @@ package app.mammon
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -94,12 +95,19 @@ class RootMountDiagnosisTest {
         }
     }
 
-    @Test fun `an unreadable proc filesystems does not become a fuse-capable claim`() {
+    /** Was pinned as KERNEL_LACKS_FUSE before the fs list was captured in su context;
+     *  field evidence showed kernels WITH fuse reporting 'lacks' off a denied read,
+     *  so blank text is now no evidence at all. */
+    @Test fun `an unreadable proc filesystems degrades to unknown, never unsupported`() {
         val attempts = listOf(RootMount.Attempt(1, "mount.nfs: Connection timed out"))
 
         assertEquals(
-            RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+            RootMount.MountDiagnosis.GENERIC,
             classify(attempts, "", RootMount.FuseOutcome.FAILED),
+        )
+        assertEquals(
+            RootMount.MountDiagnosis.GENERIC,
+            classify(attempts, "   \n\t \n", RootMount.FuseOutcome.MOUNT_REFUSED),
         )
     }
 
@@ -208,6 +216,87 @@ class RootMountDiagnosisTest {
         )
     }
 
+    /** The three verdicts that infer "nothing registered" from the fs text: each must
+     *  refuse to speak when the text is blank, whatever the other inputs say. */
+    @Test fun `a blank fs list is no evidence for any kernel claim`() {
+        val failedKernel = listOf(RootMount.Attempt(32, "mount: no such device"))
+
+        assertEquals(
+            RootMount.MountDiagnosis.GENERIC,
+            classify(failedKernel, "", null, "/vendor/lib/modules/fuse.ko\n"),
+        )
+        assertEquals(
+            RootMount.MountDiagnosis.GENERIC,
+            classify(emptyList(), "\n", RootMount.FuseOutcome.MOUNT_REFUSED),
+        )
+    }
+
+    /** Observed outcomes still speak on blank text: the mount landed and the daemon
+     *  never served, which claims nothing about the kernel either way. */
+    @Test fun `a silent daemon is blamed even when the fs list is blank`() {
+        assertEquals(
+            RootMount.MountDiagnosis.FUSE_DAEMON_FAILED,
+            classify(emptyList(), "", RootMount.FuseOutcome.DAEMON_SILENT),
+        )
+    }
+
+    /** NO_DEVICE stays unconditional on purpose: it is observed by open("/dev/fuse")
+     *  failing, not inferred from any /proc read. */
+    @Test fun `a missing fuse device is a kernel claim even with blank text`() {
+        assertEquals(
+            RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+            classify(emptyList(), "", RootMount.FuseOutcome.NO_DEVICE),
+        )
+    }
+
+    /** The mount scripts dump /proc/filesystems in the same root run, after the
+     *  marker; the classifier must eat exactly that section. */
+    @Test fun `the root fs list is taken from the marked section of su output`() {
+        val stdout = """
+            /dev/root / ext4 ro 0 0
+            __MAMMON_FS_LIST__
+            nodev	sysfs
+            	ext4
+            nodev	fuse
+        """.trimIndent()
+
+        assertEquals("nodev\tsysfs\n\text4\nnodev\tfuse", RootMount.fsListFromRoot(stdout))
+        // The ROOT-context text decides, here one without fuse registered.
+        assertEquals(
+            RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+            classify(emptyList(), RootMount.fsListFromRoot("__MAMMON_FS_LIST__\nnodev\tnfs\n"), RootMount.FuseOutcome.FAILED),
+        )
+        assertEquals(
+            RootMount.MountDiagnosis.GENERIC,
+            classify(
+                emptyList(),
+                RootMount.fsListFromRoot("x /mnt/nas nfs rw 0 0\n__MAMMON_FS_LIST__\nnodev\tnfs4\n"),
+                null,
+            ),
+        )
+    }
+
+    @Test fun `su output without the marker yields a blank fs list but intact mounts`() {
+        val legacy = "/dev/root / ext4 ro 0 0"
+
+        assertEquals("", RootMount.fsListFromRoot(legacy))
+        assertNull(RootMount.mountsFromRoot(null))
+        assertEquals(legacy, RootMount.mountsFromRoot(legacy))
+        assertEquals(
+            "/dev/root / ext4 ro 0 0\n",
+            RootMount.mountsFromRoot("$legacy\n__MAMMON_FS_LIST__\nnodev\tfuse\n"),
+        )
+        // A marker-less capture yields a blank fs list, so no kernel claim is possible.
+        assertEquals(
+            RootMount.MountDiagnosis.GENERIC,
+            classify(
+                emptyList(),
+                RootMount.fsListFromRoot("/dev/root / ext4 ro 0 0\n"),
+                RootMount.FuseOutcome.FAILED,
+            ),
+        )
+    }
+
     @Test fun `each FUSE script exit code maps to how far the rung got`() {
         assertNull(RootMount.fuseOutcomeFor(0))
         assertEquals(RootMount.FuseOutcome.FAILED, RootMount.fuseOutcomeFor(71))
@@ -217,5 +306,51 @@ class RootMountDiagnosisTest {
         assertEquals(RootMount.FuseOutcome.MOUNT_UNRESPONSIVE, RootMount.fuseOutcomeFor(76))
         assertEquals(RootMount.FuseOutcome.FAILED, RootMount.fuseOutcomeFor(1))
         assertEquals(RootMount.FuseOutcome.FAILED, RootMount.fuseOutcomeFor(255))
+    }
+
+    /** The dump block must be reachable on EVERY classified exit: a failure whose
+     *  stdout never carries the marker silently degrades to the unprivileged read
+     *  the root capture was introduced to replace. */
+    @Test fun `the kernel script dumps mounts and fs list after a failed mount`() {
+        val script = RootMount.kernelMountScript("192.0.2.1", "/export", 2049, "/mnt/nas", "4.2")
+
+        assertTrue("marker missing:\n$script", "__MAMMON_FS_LIST__" in script)
+        assertTrue("cat /proc/filesystems must follow the marker",
+            script.indexOf("__MAMMON_FS_LIST__") < script.indexOf("cat /proc/filesystems"))
+        // mount's status is captured before the dumps, which run unconditionally.
+        assertFalse(Regex("\\bmount -t nfs[^\n]*&&").containsMatchIn(script))
+    }
+
+    @Test fun `every fuse exit that classifies emits the dump first`() {
+        val script = RootMount.fuseMountScript(
+            "192.0.2.1", "/export", 2049, "/mnt/nas", RootMount.FuseLaunch("/data/app/apk", "/cache/l"),
+        )
+
+        // The refused exit dumps before exiting; the silent/unresponsive teardowns
+        // reuse mammon_dump inside teardown(); the success tail is a bare call.
+        assertTrue(
+            "refused exit must dump",
+            "|| { mammon_dump; exit 74; }" in script,
+        )
+        assertTrue(
+            "teardown dumps too",
+            "umount -l '/mnt/nas' 2>/dev/null; mammon_dump; exit" in script,
+        )
+        assertTrue("success tail dumps", script.trimEnd().endsWith("mammon_dump"))
+        assertTrue(
+            "dump defined before first use",
+            script.indexOf("mammon_dump() {") < script.indexOf("exec 3<>/dev/fuse"),
+        )
+    }
+
+    /** End-to-end over a real shell: a failing kernel rung still prints both dumps,
+     *  and the parsers recover mounts text plus fs list from it. */
+    @Test fun `a failed kernel rung still yields the root fs list through sh`() {
+        val script = RootMount.kernelMountScript("192.0.2.1", "/export", 2049, "/nonexistent-root/mp", "4.2")
+        val proc = ProcessBuilder("sh", "-c", script).start()
+        val out = proc.inputStream.bufferedReader().use { it.readText() }
+        assertTrue("marker must reach stdout even on failure", "__MAMMON_FS_LIST__" in out)
+        assertNotNull(RootMount.mountsFromRoot(out))
+        assertEquals(java.io.File("/proc/filesystems").readText().trim(), RootMount.fsListFromRoot(out))
     }
 }

@@ -82,14 +82,14 @@ object RootMount {
         val attempts = mutableListOf<Attempt>()
         for (vers in MOUNT_VERSIONS) {
             val r = runSu(kernelMountScript(host, export, port, mountpoint, vers))
-            if (r.code == 0) return mounted(mountpoint, r.stdout)
+            if (r.code == 0) return mounted(mountpoint, mountsFromRoot(r.stdout))
             attempts += Attempt(r.code, r.stderr)
             // Neither a missing su nor an unanswered prompt gets better on the next
             // rung, and each spawn can block for SU_TIMEOUT_SECONDS.
             if (isRootUnavailable(r.code)) return failed(attempts, r, null, fuse)
         }
         val f = runSu(fuseMountScript(host, export, port, mountpoint, fuse))
-        if (f.code == 0) return mounted(mountpoint, f.stdout)
+        if (f.code == 0) return mounted(mountpoint, mountsFromRoot(f.stdout))
         return failed(attempts, f, fuseOutcomeFor(f.code), fuse)
     }
 
@@ -106,7 +106,7 @@ object RootMount {
     ): Result {
         val diagnosis = classifyMountFailure(
             attempts,
-            readFilesystems(),
+            fsListFromRoot(last.stdout).ifBlank { readFilesystems() },
             if (attempts.any { isRootUnavailable(it.code) }) "" else readModuleDirs(),
             fuse,
         )
@@ -127,7 +127,7 @@ object RootMount {
         return runCatching { firstLine(File(launch.logPath).readText()) }.getOrNull()
     }
 
-    private fun kernelMountScript(
+    internal fun kernelMountScript(
         host: String,
         export: String,
         port: Int,
@@ -135,9 +135,14 @@ object RootMount {
         vers: String,
     ): String = """
         ${preloadLine("nfs nfsv3 nfsv4")}
-        mkdir -p ${quote(mountpoint)} &&
-        mount -t nfs -o nolock,port=$port,tcp,vers=$vers ${quote("$host:$export")} ${quote(mountpoint)} &&
-        cat /proc/1/mounts
+        mkdir -p ${quote(mountpoint)}
+        mount -t nfs -o nolock,port=$port,tcp,vers=$vers ${quote("$host:$export")} ${quote(mountpoint)}
+        S=${'$'}?
+        { cat /proc/1/mounts
+          echo $FS_LIST_MARKER
+          cat /proc/filesystems 2>/dev/null || true
+        }
+        exit ${'$'}S
     """.trimIndent()
 
     /** Android kernels usually build these filesystems as modules that nothing loads
@@ -164,7 +169,7 @@ object RootMount {
      * stale line cannot be read as success, and a mount whose daemon never answered is
      * unmounted rather than left wedged.
      */
-    private fun fuseMountScript(
+    internal fun fuseMountScript(
         host: String,
         export: String,
         port: Int,
@@ -178,14 +183,21 @@ object RootMount {
         // FUSE_DESTROY reply nobody will send. An `umount || umount -l` chain never
         // reaches its fallback, and the whole su call dies on its timeout instead of
         // reporting why the daemon failed.
-        fun teardown(code: Int) = "{ umount -l $mp 2>/dev/null; exit $code; }"
+        fun teardown(code: Int) = "{ umount -l $mp 2>/dev/null; mammon_dump; exit $code; }"
         return """
             : > $log 2>/dev/null
             chmod 0644 $log 2>/dev/null
-            mkdir -p $mp || exit $FUSE_MKDIR_FAILED
+            mammon_dump() {
+                cat /proc/1/mounts
+                echo $FS_LIST_MARKER
+                cat /proc/filesystems 2>/dev/null || true
+            }
+            mkdir -p $mp || { mammon_dump; exit $FUSE_MKDIR_FAILED; }
             ${preloadLine("fuse")}
+            // NO_DEVICE needs no dump: the verdict is observed here directly, not
+            // inferred from any /proc read.
             exec 3<>/dev/fuse || exit $FUSE_NO_DEVICE
-            mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse $mp || exit $FUSE_MOUNT_REFUSED
+            mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse $mp || { mammon_dump; exit $FUSE_MOUNT_REFUSED; }
             if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
             CLASSPATH=${quote(fuse.apkPath)} ${'$'}S app_process --nice-name=app.mammon:fuse / app.mammon.FuseDaemonKt 3 ${quote(host)} ${quote(port.toString())} ${quote(export)} </dev/null >>$log 2>&1 &
             D=${'$'}!
@@ -197,13 +209,26 @@ object RootMount {
             done
             grep -q 'serving ' $log 2>/dev/null || ${teardown(FUSE_DAEMON_SILENT)}
             timeout $FUSE_PROBE_SECONDS ls $mp >/dev/null 2>&1 || ${teardown(FUSE_MOUNT_UNRESPONSIVE)}
-            cat /proc/1/mounts
+            mammon_dump
         """.trimIndent()
     }
 
-    /** World-readable, so the fs-type half of a diagnosis costs no root. */
+    /** Unprivileged fallback only: the mount scripts capture the same list as root,
+     *  and an app-process read can be denied — blank here must stay a non-verdict. */
     private fun readFilesystems(): String =
         runCatching { File("/proc/filesystems").readText() }.getOrDefault("")
+
+    /** Splits the captured su output on the fs-list marker: the mount scripts dump
+     *  /proc/filesystems in the SAME root context as the mounts, because the
+     *  unprivileged app process can be denied that read and a blank text must
+     *  never read as a kernel verdict. */
+    internal fun fsListFromRoot(stdout: String?): String =
+        stdout.orEmpty().substringAfter(FS_LIST_MARKER, "").trim()
+
+    internal fun mountsFromRoot(stdout: String?): String? {
+        val s = stdout ?: return null
+        return if (FS_LIST_MARKER in s) s.substringBefore(FS_LIST_MARKER) else s
+    }
 
     /** The kernel's fs list says whether the support is registered; a module file in a
      *  vendor/system dir says whether it exists at all. Absent + present file means the
@@ -215,17 +240,22 @@ object RootMount {
         fuse: FuseOutcome?,
     ): MountDiagnosis = when {
         attempts.any { isRootUnavailable(it.code) } -> MountDiagnosis.NO_ROOT
-        fuse == FuseOutcome.NO_DEVICE || (fuse != null && !hasFilesystem(filesystemsText, "fuse")) ->
+        // A blank fs list says nothing either way: a denied or filtered read of
+        // /proc/filesystems must never harden into a kernel claim, so every
+        // inferred verdict below requires actual text.
+        fuse == FuseOutcome.NO_DEVICE ||
+            (fuse != null && filesystemsText.isNotBlank() && !hasFilesystem(filesystemsText, "fuse")) ->
             MountDiagnosis.KERNEL_LACKS_FUSE
         fuse == FuseOutcome.DAEMON_SILENT || fuse == FuseOutcome.MOUNT_UNRESPONSIVE ->
             MountDiagnosis.FUSE_DAEMON_FAILED
         hasFilesystem(filesystemsText, "nfs") || hasFilesystem(filesystemsText, "nfs4") ||
             hasFilesystem(filesystemsText, "fuse") ->
             MountDiagnosis.GENERIC
-        moduleDirsText.isNotBlank() -> MountDiagnosis.MODULE_FILES_PRESENT
+        moduleDirsText.isNotBlank() && filesystemsText.isNotBlank() ->
+            MountDiagnosis.MODULE_FILES_PRESENT
         // Nothing registered and no module file anywhere: the rung-3 verdict keeps its
         // old name, while a ladder that stopped earlier never had a FUSE verdict.
-        fuse != null -> MountDiagnosis.KERNEL_LACKS_FUSE
+        fuse != null && filesystemsText.isNotBlank() -> MountDiagnosis.KERNEL_LACKS_FUSE
         else -> MountDiagnosis.GENERIC
     }
 
@@ -390,7 +420,10 @@ object RootMount {
      *  daemon that logged and then died would otherwise block the shell forever. */
     private const val FUSE_PROBE_SECONDS = 5
 
-    /** Outside the 0-255 wait-status range, so a shell inside the mount script can
-     *  never forge it: only [exec] failing to start su produces this. */
+    /** Separates the /proc/1/mounts dump from the trailing /proc/filesystems dump in
+     *  a mount script's stdout; nothing this app mounts can contain it, and even a
+     *  hostile path only shifts the split point — the fallback still degrades safely. */
+    private const val FS_LIST_MARKER = "__MAMMON_FS_LIST__"
+
     private const val SU_NOT_EXECUTABLE_CODE = -1
 }

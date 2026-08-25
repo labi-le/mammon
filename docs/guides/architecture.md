@@ -36,9 +36,12 @@ implementation now backs both surfaces: the daemon carries no second client.
 
 A failure that exhausts the ladder is separated into the causes that need different
 fixes: no usable `su`; a kernel that cannot give us FUSE at all (`/dev/fuse` would not
-open, or `/proc/filesystems` has no `fuse` line, so no rung is left); a FUSE mount the
+open, or `/proc/filesystems` provably has no `fuse` line, so no rung is left); a FUSE mount the
 kernel accepted whose daemon then failed to serve; and everything else.
-`/proc/filesystems` is world-readable, so that distinction costs no root.
+The `/proc/filesystems` half of that distinction is read in the same root context as
+the mount itself (the scripts dump it after the mounts), because the unprivileged app
+process can be denied the same read; when even the root read comes back empty the
+verdict degrades to "unknown", never to "unsupported".
 
 Since v0.5.1 every rung first tries to load its filesystem's modules
 (`modprobe nfs`, `nfsv3`, `nfsv4` on the kernel rungs; `modprobe fuse` on the FUSE

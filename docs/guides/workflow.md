@@ -93,14 +93,14 @@ reading the summary line. Without that pass a change either ships a regression o
 rewritten chasing a phantom. The inverse is just as real: sizes that grow stepwise with
 a stored record's width, paid twice before anyone noticed, taught the rule below.
 **Tracked metrics are the binding constraint:** a regression in the metrics this project
-tracks — the lint baseline (`./gradlew :app:lintDebug` must report no new findings;
-baseline growth hides one), APK size once it starts being measured, benchmark numbers
-once benchmarks exist — is a BLOCKING finding the change MUST justify and the reviewer
-MUST accept before the round closes. It is a finding, not a prohibition, because some
-payments are deliberate: a new dependency or a shipped native binary grows the APK on
-purpose. An agent reading the rule as absolute would have blocked that. Wall-clock
-numbers are noisy and mean nothing without a control; treat small deltas as noise until
-shown real.
+tracks — lint findings (`./gradlew :app:lintDebug` must pass with ZERO new findings;
+a plain exit-code gate, deliberately no baseline file exists to hide growth behind),
+APK size once it starts being measured, benchmark numbers once benchmarks exist — is a
+BLOCKING finding the change MUST justify and the reviewer MUST accept before the round
+closes. It is a finding, not a prohibition, because some payments are deliberate: a new
+dependency or a shipped native binary grows the APK on purpose. An agent reading the
+rule as absolute would have blocked that. Wall-clock numbers are noisy and mean nothing
+without a control; treat small deltas as noise until shown real.
 
 **Why architecture is its OWN pass.** One change on a past project fixed, in a single
 commit, every individual place a value was matched against a stale label — each site

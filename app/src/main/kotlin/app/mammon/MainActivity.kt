@@ -13,15 +13,15 @@ import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var saveButton: Button
     private lateinit var prefs: Prefs
     private lateinit var status: TextView
-    private val probeGeneration = AtomicInteger(0)
-    private lateinit var saveButton: Button
 
     private lateinit var hostLayout: TextInputLayout
     private lateinit var exportLayout: TextInputLayout
@@ -71,9 +71,12 @@ class MainActivity : AppCompatActivity() {
         openButton.setOnClickListener { onOpenInFiles() }
         mountBtn.setOnClickListener { onMount(true) }
         unmountBtn.setOnClickListener { onMount(false) }
+        saveButton.isEnabled = !PROBE_IN_FLIGHT.get()
         openButton.isEnabled = false
+        mountBtn.isEnabled = !MOUNT_IN_FLIGHT.get()
+        unmountBtn.isEnabled = !MOUNT_IN_FLIGHT.get()
 
-        if (prefs.spec() != null) {
+        if (prefs.spec() != null && !PROBE_IN_FLIGHT.get()) {
             status.setText(R.string.checking_saved)
             probeSavedConfig()
         }
@@ -111,11 +114,13 @@ class MainActivity : AppCompatActivity() {
                 ExportSpec.DEFAULT_PORT
             }
         }
-        if (!valid) {
+        val canonical = "$host:$port:$export"
+        val spec = ExportSpec.parse(canonical)
+        if (spec == null) {
+            exportLayout.error = getString(R.string.err_field_export)
             status.setText(R.string.err_bad_config)
             return
         }
-        val spec = ExportSpec(host, export.trimEnd('/').ifEmpty { "/" }, port)
         prefs.host = spec.host
         prefs.export = spec.export
         prefs.port = spec.port
@@ -129,8 +134,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun probeSavedConfig() {
         val spec = prefs.spec() ?: return
-        val gen = probeGeneration.incrementAndGet()
+        val gen = PROBE_GENERATION.incrementAndGet()
         status.setText(R.string.probing)
+        PROBE_IN_FLIGHT.set(true)
         saveButton.isEnabled = false
         thread(name = "nfs-probe") {
             val ok = try {
@@ -143,7 +149,8 @@ class MainActivity : AppCompatActivity() {
                 false
             }
             runOnUiThread {
-                if (gen != probeGeneration.get()) return@runOnUiThread
+                if (gen != PROBE_GENERATION.get()) return@runOnUiThread
+                PROBE_IN_FLIGHT.set(false)
                 saveButton.isEnabled = true
                 if (ok) {
                     status.setText(R.string.probe_ok)
@@ -166,8 +173,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onMount(doMount: Boolean) {
-        val mp = mountpointEdit.text?.toString()?.trim().orEmpty()
-        if (!mp.startsWith("/")) {
+        // Trailing slashes are stripped once here so /proc/1/mounts exact-match sees
+        // the same string the mount script and the parser use.
+        val mp = (mountpointEdit.text?.toString() ?: "").trim().trimEnd('/').ifEmpty { "/" }
+        if (!mp.startsWith("/") || mp == "/") {
             mountpointLayout.error = getString(R.string.err_bad_mountpoint_absolute)
             return
         }
@@ -180,6 +189,7 @@ class MainActivity : AppCompatActivity() {
         mountBtn.isEnabled = false
         unmountBtn.isEnabled = false
         mountStatus.setText(R.string.working)
+        MOUNT_IN_FLIGHT.set(true)
         thread(name = "root-mount") {
             val result = if (doMount) {
                 RootMount.mount(spec!!.host, spec.export, spec.port, mp)
@@ -188,6 +198,7 @@ class MainActivity : AppCompatActivity() {
             }
             val state = result.stateAfter
             runOnUiThread {
+                MOUNT_IN_FLIGHT.set(false)
                 mountBtn.isEnabled = true
                 unmountBtn.isEnabled = true
                 mountStatus.text = when {
@@ -204,7 +215,12 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val AUTHORITY = "app.mammon.nfs"
-        const val ROOT_ID = "nfs"
         const val PROBE_TIMEOUT_MS = 15_000L
+
+        /** Process-scoped so a recreated activity inherits the real mount/probe
+         *  state instead of re-enabling buttons while work is still running. */
+        private val MOUNT_IN_FLIGHT = AtomicBoolean(false)
+        private val PROBE_IN_FLIGHT = AtomicBoolean(false)
+        val PROBE_GENERATION = AtomicInteger(0)
     }
 }

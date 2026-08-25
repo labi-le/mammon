@@ -18,4 +18,4 @@ jobs:
       - name: Build, lint and test
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+          ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug

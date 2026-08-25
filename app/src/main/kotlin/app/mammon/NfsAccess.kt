@@ -1,20 +1,24 @@
 package app.mammon
 
+import com.emc.ecs.nfsclient.nfs.NfsDirectoryPlusEntry
 import com.emc.ecs.nfsclient.nfs.NfsGetAttributes
 import com.emc.ecs.nfsclient.nfs.NfsType
 import com.emc.ecs.nfsclient.nfs.io.Nfs3File
 import com.emc.ecs.nfsclient.nfs.io.NfsFileInputStream
 import com.emc.ecs.nfsclient.nfs.nfs3.Nfs3
+import com.emc.ecs.nfsclient.network.NetMgr
 import com.emc.ecs.nfsclient.rpc.CredentialNone
 import java.io.Closeable
 import java.io.IOException
+import java.net.InetSocketAddress
 import java.util.Locale
 
 /**
  * NFSv3 operations over one long-lived [Nfs3] session. The library caches TCP
- * connections process-wide with no eviction hook, so the session is kept alive for
- * the lifetime of a configuration and rebuilt only when [spec] changes (the swap
- * lives in NfsDocumentsProvider.nfsInstance).
+ * connections process-wide in NetMgr; [close] evicts this spec's entry so a rebuilt
+ * session cannot silently reuse this one. Eviction leaves this session's channel
+ * itself open (the library has no harder hook), so a query still holding this
+ * instance across a config change finishes on its own connection instead of failing.
  *
  * Every method blocks on network I/O: callers must stay off the main thread.
  */
@@ -37,10 +41,17 @@ class NfsAccess(private val spec: ExportSpec) : Closeable {
         return if (f.exists()) f.attributes else null
     }
 
+    /** Attributes for one export-absolute child path, or null when missing. */
+    private fun statPath(path: String): NfsGetAttributes? {
+        val f = fileFor(path)
+        return if (f.exists()) f.attributes else null
+    }
+
     /**
      * Children of the directory named by [docId], directories first. One READDIRPLUS
      * cookie loop carries every child's attributes, replacing the READDIR +
-     * per-child exists()/GETATTR storm.
+     * per-child exists()/GETATTR storm; entries whose attributes the server
+     * withheld fall back to a single stat instead of being dropped.
      */
     fun list(docId: String): List<ChildEntry> {
         val dirPath = requireNotNull(PathCodec.pathFor(docId))
@@ -55,9 +66,7 @@ class NfsAccess(private val spec: ExportSpec) : Closeable {
             cookie = page.cookie
             cookieverf = page.cookieverf
             for (entry in page.entries) {
-                val attrs = entry.attributes ?: continue
-                val path = listableChild(dirPath, entry.fileName, attrs.type) ?: continue
-                children += ChildEntry(path, attrs)
+                resolveEntry(dirPath, entry, ::statPath)?.let { children += it }
             }
         } while (!page.isEof && page.entries.isNotEmpty())
         return children.sortedWith(
@@ -81,8 +90,11 @@ class NfsAccess(private val spec: ExportSpec) : Closeable {
     }
 
     override fun close() {
-        // Nfs3 has no close(); dropping the reference releases everything but NetMgr's
-        // process-wide connection cache, which has no public eviction API either.
+        // NetMgr keys its maps with createUnresolved addresses; a resolved one would
+        // miss the cache. Best-effort: the portmapper (111) connection stays cached.
+        runCatching {
+            NetMgr.getInstance().dropConnection(InetSocketAddress.createUnresolved(spec.host, spec.port))
+        }
     }
 
     companion object {
@@ -93,14 +105,35 @@ class NfsAccess(private val spec: ExportSpec) : Closeable {
         private const val READDIRPLUS_DIR_COUNT = 32 * 1024
         private const val READDIRPLUS_MAX_COUNT = 64 * 1024
 
-        /** Pure filter for one READDIRPLUS entry; returns the export-absolute child
-         *  path, or null when the entry must be dropped (dot names, or a type that is
-         *  neither directory nor regular file). Null attributes mean the server
-         *  withheld them. */
-        internal fun listableChild(parentPath: String, name: String?, type: NfsType?): String? {
+        /** Pure name/path half of the entry filter: dot names are dropped, anything
+         *  else becomes its export-absolute child path. */
+        internal fun childPath(parentPath: String, name: String?): String? {
             if (name.isNullOrEmpty() || name == "." || name == "..") return null
-            if (type != NfsType.NFS_DIR && type != NfsType.NFS_REG) return null
             return if (parentPath.endsWith("/")) parentPath + name else "$parentPath/$name"
+        }
+
+        /** Pure filter for one READDIRPLUS entry: returns the export-absolute child
+         *  path, or null when the entry must be dropped (dot names, or a type that is
+         *  neither directory nor regular file). */
+        internal fun listableChild(parentPath: String, name: String?, type: NfsType?): String? =
+            childPath(parentPath, name)?.takeIf { type == NfsType.NFS_DIR || type == NfsType.NFS_REG }
+
+        /** Resolves one READDIRPLUS entry into a kept child, or null when the entry
+         *  must be dropped: dot names (before any stat), a type that ends up neither
+         *  directory nor regular file, or a failed fallback stat when the server
+         *  withheld the attributes. At most one stat per entry. [stat] stands in for
+         *  instance stat so tests can run this without an NFS session. */
+        internal fun resolveEntry(
+            parentPath: String,
+            entry: NfsDirectoryPlusEntry,
+            stat: (String) -> NfsGetAttributes?,
+        ): ChildEntry? {
+            val name = entry.fileName
+            val attrs = entry.attributes
+                ?: stat(childPath(parentPath, name) ?: return null)
+                ?: return null
+            val path = listableChild(parentPath, name, attrs.type) ?: return null
+            return ChildEntry(path, attrs)
         }
 
         private const val RETRIES = 2

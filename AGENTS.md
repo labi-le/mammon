@@ -96,9 +96,10 @@ goes through:
   change takes ONE pass, and that pass is the ARCHITECTURE one. The termination
   conditions never relax: a one-line change with an open finding is not done either.
 - **Tracked metrics are the binding constraint.** A regression in what this project
-  tracks — lint findings (no baseline growth), APK size once measured, benchmark numbers
-  once they exist — is a BLOCKING finding the change must justify and the reviewer must
-  accept.
+  tracks — lint findings (`:app:lintDebug` must pass with ZERO new findings; a plain
+  exit-code gate, deliberately no baseline file), APK size once measured, benchmark
+  numbers once they exist — is a BLOCKING finding the change must justify and the
+  reviewer must accept.
 - **Comments and the docs are first-class review targets.** The recurring defect is the
   true-when-written claim. A review that approves the code and ignores its comments — or
   the docs its change falsified — has not finished.

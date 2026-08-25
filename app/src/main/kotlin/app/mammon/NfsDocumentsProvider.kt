@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.os.CancellationSignal
+import android.os.OperationCanceledException
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.DocumentsProvider
@@ -43,6 +44,10 @@ class NfsDocumentsProvider : DocumentsProvider() {
         runBlocking {
             try {
                 withTimeout(NFS_TIMEOUT_MS) { block(nfsInstance()) }
+            } catch (e: OperationCanceledException) {
+                throw e
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 throw FileNotFoundException(readableMessage(e))
             }
@@ -52,14 +57,21 @@ class NfsDocumentsProvider : DocumentsProvider() {
 
     private fun nfsInstance(): NfsAccess {
         val s = spec() ?: throw FileNotFoundException(context!!.getString(R.string.err_no_config))
+        // Built OUTSIDE the monitor on purpose: the Nfs3 constructor does real network
+        // I/O (portmap + mountd + LOOKUP), so holding the lock through it would park
+        // every other SAF call uninterruptibly past their withTimeout. Cache misses
+        // therefore build concurrently; only the compare-and-swap is serialized.
+        val candidate = NfsAccess(s)
         synchronized(this) {
             cachedAccess?.let { (spec, access) ->
-                if (spec == s) return access
+                if (spec == s) {
+                    runCatching { candidate.close() }
+                    return access
+                }
                 runCatching { access.close() }
             }
-            val access = NfsAccess(s)
-            cachedAccess = s to access
-            return access
+            cachedAccess = s to candidate
+            return candidate
         }
     }
 
@@ -136,6 +148,10 @@ class NfsDocumentsProvider : DocumentsProvider() {
                     signal?.throwIfCancellationRequestedCompat()
                     access.streamFor(documentId)
                 }
+            } catch (e: OperationCanceledException) {
+                throw e
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 throw FileNotFoundException(readableMessage(e))
             }
@@ -158,9 +174,10 @@ class NfsDocumentsProvider : DocumentsProvider() {
                     sink.write(buf, 0, n)
                 }
                 sink.flush()
-            } catch (e: IOException) {
-                // Reliable pipe surfaces this as EIO on the reading end.
-                try { writeSide.closeWithError(e.message) } catch (_: IOException) {}
+            } catch (e: Throwable) {
+                // Reliable pipe surfaces this as EIO on the reading end; catching
+                // Throwable keeps a non-IO crash from masquerading as clean EOF.
+                try { writeSide.closeWithError(e.message ?: e.javaClass.name) } catch (_: Throwable) {}
             } finally {
                 runCatching { input.close() }
                 runCatching { sink.close() }

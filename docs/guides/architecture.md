@@ -76,14 +76,15 @@ Expose the NFS share through a `DocumentsProvider`; files appear in SAF file pic
 
 ## What follows regardless of direction
 
-Whichever direction wins, the easysshfs shape predicts the component set — all still
-unbuilt:
+Whichever direction wins, the easysshfs shape predicted a component set beyond what the
+first cut of direction C needed — most of it still future work:
 
-- a foreground service owning the mount session (type and permission set depend on the
-  direction);
+- a foreground service owning the mount session (direction A currently runs one-shot
+  from the activity instead);
 - possibly a boot receiver restoring configured mounts;
 - permission declarations beyond today's `INTERNET`;
-- a policy decision on bundled binaries vs. building them in-tree.
+- a policy decision on bundled binaries vs. building them in-tree (only bites if B is
+  ever picked).
 
 When a direction IS picked, update this guide's Status section and `routes.md`'s Planned
 section in the same change — a guide describing a dead option as live is worse than no

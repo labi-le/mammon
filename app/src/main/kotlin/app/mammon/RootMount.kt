@@ -134,23 +134,23 @@ object RootMount {
         val proc = ProcessBuilder(*cmd)
             .redirectErrorStream(false)
             .start()
-        // Both pipes are drained concurrently BEFORE waiting on exit: reading them
+        // Both pipes are drained asynchronously BEFORE waiting on exit: reading them
         // sequentially deadlocks when the child fills the stdout pipe while stderr
-        // is silent.
-        val outReader = proc.inputStream.bufferedReader()
-        val errReader = proc.errorStream.bufferedReader()
-        val outFuture = java.util.concurrent.CompletableFuture.supplyAsync {
-            outReader.use { it.readText() }
+        // is silent, and draining inline before waitFor would block a hung su past
+        // its timeout instead of ever reaching destroyForcibly.
+        val outText = java.util.concurrent.CompletableFuture.supplyAsync {
+            proc.inputStream.bufferedReader().use { it.readText() }
         }
-        val errText = errReader.use { it.readText() }
+        val errText = java.util.concurrent.CompletableFuture.supplyAsync {
+            proc.errorStream.bufferedReader().use { it.readText() }
+        }
         if (!proc.waitFor(SU_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             runCatching { proc.destroyForcibly() }
             SuResult(SU_TIMED_OUT_CODE, null, "su timed out")
         } else {
-            val outText = runCatching {
-                outFuture.get(SU_TIMEOUT_SECONDS * 2, TimeUnit.SECONDS)
-            }.getOrNull()
-            SuResult(proc.exitValue(), outText?.takeIf { it.isNotBlank() }, errText)
+            val out = runCatching { outText.get(DRAIN_JOIN_SECONDS, TimeUnit.SECONDS) }.getOrNull()
+            val err = runCatching { errText.get(DRAIN_JOIN_SECONDS, TimeUnit.SECONDS) }.getOrDefault("")
+            SuResult(proc.exitValue(), out?.takeIf { it.isNotBlank() }, err)
         }
     } catch (e: IOException) {
         SuResult(127, null, e.message ?: "su not available")
@@ -164,4 +164,8 @@ object RootMount {
 
     /** Conventionally "timeout"; surfaced verbatim so callers can classify it. */
     private const val SU_TIMED_OUT_CODE = 124
+
+    /** Bound on joining each drain future after a clean exit; the pipes sit at EOF
+     *  by then, so this only guards a wedged reader. */
+    private const val DRAIN_JOIN_SECONDS = 10L
 }

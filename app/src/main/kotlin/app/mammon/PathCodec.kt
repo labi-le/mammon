@@ -30,6 +30,15 @@ object PathCodec {
     fun nameOf(docId: String): String =
         if (docId == ROOT_ID) ROOT_ID else docId.substringAfterLast('/')
 
+    /**
+     * Export-absolute path of a directory entry, null for the dot names every
+     * readdir carries and for the empty name a malformed reply could carry.
+     */
+    fun childPath(parentPath: String, name: String?): String? {
+        if (name.isNullOrEmpty() || name == "." || name == "..") return null
+        return if (parentPath.endsWith("/")) parentPath + name else "$parentPath/$name"
+    }
+
     fun isChild(parentDocId: String, docId: String): Boolean =
         when {
             docId == parentDocId -> false

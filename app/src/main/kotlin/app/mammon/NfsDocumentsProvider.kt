@@ -8,8 +8,6 @@ import android.os.OperationCanceledException
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.DocumentsProvider
-import com.emc.ecs.nfsclient.nfs.NfsGetAttributes
-import com.emc.ecs.nfsclient.nfs.NfsType
 import java.io.FileNotFoundException
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
@@ -23,8 +21,9 @@ import kotlinx.coroutines.withTimeout
  * Exposes the configured NFS export through SAF, read-only.
  *
  * documentId = export-absolute path with "/" separators (see [PathCodec]). Every NFS
- * round trip is bounded by [NFS_TIMEOUT_MS]; one long-lived connection per config is
- * kept in [nfsInstance] (see NfsAccess).
+ * round trip is bounded by [NFS_TIMEOUT_MS]; one long-lived session per config is
+ * kept in [nfsInstance], and since that entry holds the session it also caches which
+ * protocol version [NfsSessions] settled on.
  */
 class NfsDocumentsProvider : DocumentsProvider() {
 
@@ -40,7 +39,7 @@ class NfsDocumentsProvider : DocumentsProvider() {
         return if (prefs.host.isBlank() || prefs.export.isBlank()) null else prefs.spec()
     }
 
-    private fun <T> nfsCall(block: (NfsAccess) -> T): T =
+    private fun <T> nfsCall(block: (NfsSession) -> T): T =
         runBlocking {
             try {
                 withTimeout(NFS_TIMEOUT_MS) { block(nfsInstance()) }
@@ -53,22 +52,26 @@ class NfsDocumentsProvider : DocumentsProvider() {
             }
         }
 
-    private var cachedAccess: Pair<ExportSpec, NfsAccess>? = null
+    private var cachedAccess: Pair<ExportSpec, NfsSession>? = null
 
-    private fun nfsInstance(): NfsAccess {
+    private fun nfsInstance(): NfsSession {
         val s = spec() ?: throw FileNotFoundException(context!!.getString(R.string.err_no_config))
-        // Built OUTSIDE the monitor on purpose: the Nfs3 constructor does real network
-        // I/O (portmap + mountd + LOOKUP), so holding the lock through it would park
-        // every other SAF call uninterruptibly past their withTimeout. Cache misses
-        // therefore build concurrently; only the compare-and-swap is serialized.
-        val candidate = NfsAccess(s)
         synchronized(this) {
-            cachedAccess?.let { (spec, access) ->
+            cachedAccess?.let { (spec, session) -> if (spec == s) return session }
+        }
+        // Built OUTSIDE the monitor on purpose: opening a session does real network
+        // I/O (a v4.1 EXCHANGE_ID/CREATE_SESSION handshake, or v3 portmap + mountd +
+        // LOOKUP), so holding the lock through it would park every other SAF call
+        // uninterruptibly past their withTimeout. Two threads missing at once
+        // therefore build concurrently; only the compare-and-swap is serialized.
+        val candidate = NfsSessions.open(s)
+        synchronized(this) {
+            cachedAccess?.let { (spec, session) ->
                 if (spec == s) {
                     runCatching { candidate.close() }
-                    return access
+                    return session
                 }
-                runCatching { access.close() }
+                runCatching { session.close() }
             }
             cachedAccess = s to candidate
             return candidate
@@ -163,7 +166,7 @@ class NfsDocumentsProvider : DocumentsProvider() {
             val sink = ParcelFileDescriptor.AutoCloseOutputStream(writeSide)
             try {
                 var sent = 0L
-                val buf = ByteArray(NfsAccess.READ_CHUNK)
+                val buf = ByteArray(NFS_READ_CHUNK)
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
@@ -186,20 +189,19 @@ class NfsDocumentsProvider : DocumentsProvider() {
         return readSide
     }
 
-    private fun addRowFor(out: MatrixCursor, path: String, attr: NfsGetAttributes) {
+    private fun addRowFor(out: MatrixCursor, path: String, attr: NodeAttrs) {
         val docId = requireNotNull(PathCodec.docIdFor(path))
-        val isDir = attr.type == NfsType.NFS_DIR
         val name = PathCodec.nameOf(docId)
         out.newRow().apply {
             add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, docId)
             add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, name)
             add(
                 DocumentsContract.Document.COLUMN_MIME_TYPE,
-                if (isDir) DocumentsContract.Document.MIME_TYPE_DIR else guessMime(name),
+                if (attr.isDirectory) DocumentsContract.Document.MIME_TYPE_DIR else guessMime(name),
             )
             add(DocumentsContract.Document.COLUMN_FLAGS, 0)
             add(DocumentsContract.Document.COLUMN_SIZE, attr.size)
-            add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, attr.mtime.timeInMillis)
+            add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, attr.lastModifiedMillis)
         }
     }
 

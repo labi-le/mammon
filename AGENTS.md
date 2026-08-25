@@ -18,7 +18,7 @@ nix-shell --run './gradlew :app:lintDebug'
 | `settings.gradle.kts` | Gradle settings; registers the `:app` module |
 | `build.gradle.kts` | Root build script; plugin versions |
 | `app/` | The single module: application code, manifest, resources |
-| `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFS access layer, root-mount plumbing, prefs/spec parsing |
+| `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFSv4.1 and NFSv3 session implementations behind one interface, root-mount plumbing, prefs/spec parsing |
 | `app/src/main/res/` | Resources: M3 theme (`Theme.Mammon`), strings, adaptive launcher icons |
 | `app/build.gradle.kts` | Module build config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35 |
 | `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |
@@ -31,17 +31,21 @@ nix-shell --run './gradlew :app:lintDebug'
 ## Current intent
 
 mammon is an Android app for reading NFS storage on a device, inspired by
-[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.2.0 implements two of
+[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.4.0 implements two of
 the three directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 
 - **Primary — rootless SAF browsing** (direction C): `NfsDocumentsProvider` exposes the
-  configured export to any file manager over `com.emc.ecs:nfs-client` (NFSv3 + mountd).
+  configured export to any file manager. Two protocol versions sit behind the
+  `NfsSession` interface and are chosen per export with no UI switch — NFSv4.1 over
+  `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
+  as the fallback for servers that still run rpcbind and mountd.
 - **Root option — kernel mount** (direction A, best-effort): `RootMount` runs
   `mount -t nfs` through `su --mount-master`; it reports plainly when the kernel lacks
   NFS support. Direction B stays documented as future work.
 
-Out of scope so far: provider-side writes/rename/delete, Kerberos/AUTH_SEC, foreground
-services, boot receivers, automount-on-boot, caching layers, NFSv4.
+Out of scope so far: provider-side writes/rename/delete, Kerberos/RPCSEC_GSS, pNFS
+layouts, NFSv4 delegations and byte-range locks, foreground services, boot receivers,
+automount-on-boot, caching layers.
 
 ## Verification expectations
 

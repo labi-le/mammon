@@ -16,14 +16,18 @@ Config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35.
 | `MainActivity.kt` | Two-card UI (SAF config + root mount), classic Views over `R.layout.activity_main`; saves `Prefs`, probes the share, fires ACTION_VIEW on the provider root, drives Mount/Unmount off the main thread. |
 | `Prefs.kt` | SharedPreferences: host, export, port (default 2049), last mountpoint; `spec()` re-parses into an `ExportSpec`. |
 | `ExportSpec.kt` | Parses "host[:port]:/export"; IPv6 literals bracketed; port range and traversal rejected. |
-| `PathCodec.kt` | documentId <-> export-absolute path; rejects "..", empty segments, leading/trailing slashes. Every provider id passes through it. |
-| `NfsAccess.kt` | NFSv3 operations over `com.emc.ecs:nfs-client` — stat, list (one READDIRPLUS loop carrying child attributes; symlinks and special files are not listed), capped read stream. One long-lived session per config; the provider rebuilds it when the config changes. |
-| `NfsDocumentsProvider.kt` | SAF root for the configured export, read-only; every NFS call bounded (~15 s) via coroutine timeout; one long-lived connection per config (`nfsInstance`), openDocument streams through a reliable pipe with a 64 MiB cap. |
+| `PathCodec.kt` | documentId <-> export-absolute path; rejects "..", empty segments, leading/trailing slashes; `childPath` builds a directory entry's path and drops dot names. Every provider id passes through it. |
+| `NfsSession.kt` | The read-only contract the provider uses (`probeRoot`/`stat`/`list`/`streamFor`), the protocol-neutral `NodeAttrs`/`ChildEntry`, `NFS_READ_CHUNK`, the shared directories-first ordering, and `NfsSessions.select` — v4.1 first, v3 on failure, the v4 error kept as a suppressed exception. |
+| `NfsAccess.kt` | The NFSv3 `NfsSession` over `com.emc.ecs:nfs-client` — stat, list (one READDIRPLUS loop carrying child attributes; symlinks and special files are not listed), capped read stream. One long-lived session per config; the provider rebuilds it when the config changes. |
+| `NfsV4Access.kt` | The NFSv4.1 `NfsSession` over `org.dcache:nfs4j-core` XDR + `org.dcache:oncrpc4j-core` RPC: EXCHANGE_ID/CREATE_SESSION/RECLAIM_COMPLETE handshake with hand-built channel attributes, one COMPOUND per operation (SEQUENCE + PUTFH + LOOKUPs + op), READ on the anonymous stateid, AUTH_SYS via the local `AuthSys` credential, and one in-place re-establish on a session the server dropped. `Fattr4Codec` decodes the three requested attributes. |
+| `NfsDocumentsProvider.kt` | SAF root for the configured export, read-only; every NFS call bounded (~15 s) via coroutine timeout; one long-lived session per config (`nfsInstance`, which also caches the chosen protocol version), openDocument streams through a reliable pipe with a 64 MiB cap. |
 | `NfsScanner.kt` | Discovery: expands the current IPv4 subnet into candidates (`addresses`, capped to the baseIp's /24, network+broadcast excluded) and probes TCP 2049 in parallel (`scan`); `currentSubnet` reads the active network's IPv4 LinkAddress. |
 | `MountsParser.kt` / `RootMount.kt` | `/proc/mounts` line parser; kernel mounts via `su --mount-master -c` (nsenter fallback), state from /proc/1/mounts so the check matches the global namespace the mount landed in. |
 
 Unit tests (`app/src/test/kotlin/app/mammon/`, JUnit4, no Robolectric): `PathCodecTest`,
-`ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `NfsListFilterTest`, `NfsListNullAttrsFallbackTest`, `ManifestGuardTest`, `NfsScannerTest`.
+`ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `NfsListFilterTest`,
+`NfsListNullAttrsFallbackTest`, `ManifestGuardTest`, `NfsScannerTest`, `Fattr4CodecTest`,
+`NfsVersionSelectionTest`.
 
 No services or receivers exist yet.
 

@@ -10,6 +10,12 @@
 Direction C — the rootless DocumentsProvider — was PICKED on 2026-08-24 and is the
 primary way mammon exposes NFS storage: the configured export shows up in any SAF file
 manager through `NfsDocumentsProvider` (authority `app.mammon.nfs`), read-only.
+Since v0.4.0 that provider speaks two protocol versions behind one `NfsSession`
+interface, chosen per export with no UI switch: NFSv4.1 (`NfsV4Access`, over
+`org.dcache:nfs4j-core` XDR and `org.dcache:oncrpc4j-core` RPC) is tried first because
+it needs only TCP 2049, and NFSv3 (`NfsAccess`, over `com.emc.ecs:nfs-client`) is the
+fallback for servers that still publish rpcbind and mountd. An NFSv4-only server —
+the common modern default — was invisible to mammon before that.
 Direction A — kernel NFS via `mount -t nfs` under `su` — is implemented alongside it as
 a best-effort option (`RootMount`): it works only on devices whose kernel has NFS
 support and whose su setup lets the mount land in the global namespace; when the kernel

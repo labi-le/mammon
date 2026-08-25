@@ -152,7 +152,7 @@ class MainActivity : AppCompatActivity() {
             val ok = try {
                 runBlocking {
                     withTimeout(PROBE_TIMEOUT_MS) {
-                        NfsAccess(spec).use { it.probeRoot() != null }
+                        NfsSessions.open(spec).use { it.probeRoot() != null }
                     }
                 }
             } catch (_: Exception) {

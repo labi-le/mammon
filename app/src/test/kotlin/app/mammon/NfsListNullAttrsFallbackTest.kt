@@ -4,7 +4,9 @@ import com.emc.ecs.nfsclient.nfs.NfsDirectoryPlusEntry
 import com.emc.ecs.nfsclient.nfs.NfsType
 import com.emc.ecs.nfsclient.rpc.Xdr
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -42,7 +44,7 @@ class NfsListNullAttrsFallbackTest {
         var stats = 0
         val child = NfsAccess.resolveEntry("/", e, { stats++; error("must not stat") })
         assertEquals("/dir", child!!.path)
-        assertEquals(NfsType.NFS_DIR, child.attributes.type)
+        assertTrue(child.attributes.isDirectory)
         assertEquals(0, stats)
     }
 
@@ -56,7 +58,7 @@ class NfsListNullAttrsFallbackTest {
             statAttrs
         }
         assertEquals("/file.txt", child!!.path)
-        assertEquals(NfsType.NFS_REG, child.attributes.type)
+        assertFalse(child.attributes.isDirectory)
         assertEquals(1, stats)
     }
 

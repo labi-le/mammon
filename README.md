@@ -31,7 +31,8 @@ nix-shell --run './gradlew :app:installDebug'
 
 Pushing a `v*` tag (matching the app `versionName`) builds, verifies and signs the
 release APK — signing needs the keystore secrets configured; without them a GitHub
-Release is published with an unsigned APK.
+Release is published with an unsigned APK. Local builds sign automatically when
+`keystore.properties` is configured.
 
 Agent-facing documentation lives in [`AGENTS.md`](./AGENTS.md) and [`routes.md`](./routes.md).
 

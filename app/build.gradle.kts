@@ -1,4 +1,6 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.File
+import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,10 +15,27 @@ android {
         applicationId = "app.mammon"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.3.1"
+        versionCode = 5
+        versionName = "0.3.2"
     }
 
+    // Local releases sign when keystore.properties exists; absent file keeps them unsigned (CI parity).
+    val keystorePropertiesFile = File(System.getProperty("user.home"), ".config/mammon/keystore.properties")
+    val keystoreProperties = Properties()
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+    }
+
+    signingConfigs {
+        if (!keystoreProperties.isEmpty) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -25,6 +44,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

@@ -30,9 +30,9 @@
     <string name="not_mounted_state">Not mounted.</string>
     <string name="unknown_state">Mount state unknown (cannot read the global mount table).</string>
     <string name="not_mounted_after_mount">Mount command succeeded, but the share is not visible in the global mount table.</string>
-    <string name="err_mount_no_root">No root access — this device has no usable su, so a kernel mount cannot be attempted.</string>
-    <string name="err_mount_kernel_no_nfs">This kernel has no NFS client support.</string>
-    <string name="err_mount_version_module">The kernel supports NFS, but the module for the versions tried (4.2 and 3) is not loaded.</string>
+    <string name="err_mount_no_root">No root access — su could not be started, or it never answered.</string>
+    <string name="err_mount_kernel_no_nfs">No NFS client is loaded in this kernel (no nfs or nfs4 in /proc/filesystems).</string>
+    <string name="err_mount_version_module">The kernel has NFS, but no module for the versions tried (%1$s).</string>
     <string name="err_mount_failed">Mount failed: %1$s</string>
     <string name="err_no_config">No NFS server configured yet. Save host and export first.</string>
     <string name="err_timeout">The server did not answer in time.</string>

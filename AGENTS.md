@@ -31,7 +31,7 @@ nix-shell --run './gradlew :app:lintDebug'
 ## Current intent
 
 mammon is an Android app for reading NFS storage on a device, inspired by
-[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.4.0 implements two of
+[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.4.1 implements two of
 the three directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 
 - **Primary — rootless SAF browsing** (direction C): `NfsDocumentsProvider` exposes the

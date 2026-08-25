@@ -29,23 +29,41 @@ class RootMountDiagnosisTest {
         filesystems: String,
     ) = RootMount.classifyMountFailure(attempts, filesystems)
 
-    @Test fun `su that cannot be executed is reported as no root, never as a kernel claim`() {
+    @Test fun `su that cannot be started is reported as no root, never as a kernel claim`() {
         val attempts = listOf(
-            RootMount.Attempt(127, "Cannot run program \"su\": error=2, No such file or directory"),
+            RootMount.Attempt(-1, "Cannot run program \"su\": error=2, No such file or directory"),
         )
 
         assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withNfs))
-        // The kernel here HAS nfs; a missing su must not be blamed on the kernel.
+        // The kernel here HAS nfs; an su that never started must not be blamed on it.
         assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withoutNfs))
     }
 
-    @Test fun `exit 127 alone is enough, and outranks an ENODEV from another version`() {
+    @Test fun `an su that never answered is no root, not a kernel verdict`() {
+        val attempts = listOf(RootMount.Attempt(124, "su timed out"))
+
+        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withNfs))
+        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withoutNfs))
+    }
+
+    @Test fun `no root outranks an ENODEV from another version`() {
         val attempts = listOf(
-            RootMount.Attempt(1, "mount: no such device"),
-            RootMount.Attempt(127, "su: not found"),
+            RootMount.Attempt(32, "mount: no such device"),
+            RootMount.Attempt(-1, "Cannot run program \"su\""),
         )
 
         assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withNfs))
+    }
+
+    /** 127 is what a shell returns for command-not-found, so a rooted device missing
+     *  a helper inside the script must not be told it has no root. */
+    @Test fun `exit 127 from the mount script is not a no-root verdict`() {
+        val attempts = listOf(
+            RootMount.Attempt(127, "sh: nsenter: not found"),
+            RootMount.Attempt(127, "sh: nsenter: not found"),
+        )
+
+        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withNfs))
     }
 
     @Test fun `absent nfs and nfs4 fs types are reported as a kernel without NFS`() {

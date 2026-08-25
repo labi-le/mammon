@@ -74,9 +74,9 @@ object RootMount {
                 return Result(true, "mounted at $mountpoint").withState(mountpoint, r.stdout)
             }
             failures += r
-            // Without a usable su the next version fails identically, and each spawn can
-            // block for SU_TIMEOUT_SECONDS.
-            if (isSuUnavailable(r.code, r.stderr)) break
+            // Neither a missing su nor an unanswered prompt gets better on the next
+            // version, and each spawn can block for SU_TIMEOUT_SECONDS.
+            if (isRootUnavailable(r.code)) break
         }
         val last = failures.last()
         return Result(
@@ -111,15 +111,17 @@ object RootMount {
         attempts: List<Attempt>,
         filesystemsText: String,
     ): MountDiagnosis = when {
-        attempts.any { isSuUnavailable(it.code, it.stderr) } -> MountDiagnosis.NO_ROOT
+        attempts.any { isRootUnavailable(it.code) } -> MountDiagnosis.NO_ROOT
         !hasNfsFilesystem(filesystemsText) -> MountDiagnosis.KERNEL_LACKS_NFS
         attempts.isNotEmpty() && attempts.all { isUnknownFsType(it.stderr) } ->
             MountDiagnosis.VERSION_MODULE_MISSING
         else -> MountDiagnosis.GENERIC
     }
 
-    private fun isSuUnavailable(code: Int, stderr: String): Boolean =
-        code == SU_NOT_EXECUTABLE_CODE || stderr.contains("Cannot run program", true)
+    /** Root never arrived: su could not be started, or it never answered. Both are
+     *  reported as such rather than blamed on the kernel. */
+    private fun isRootUnavailable(code: Int): Boolean =
+        code == SU_NOT_EXECUTABLE_CODE || code == SU_TIMED_OUT_CODE
 
     private fun isUnknownFsType(stderr: String): Boolean =
         stderr.contains("no such device", true) ||
@@ -143,11 +145,18 @@ object RootMount {
         }
     }
 
-    private fun Result.withState(mountpoint: String, mountsText: String?): Result =
-        copy(
-            stateAfter = mountedState(mountpoint, mountsText.orEmpty()),
-            fsType = mountedFsType(mountpoint, mountsText.orEmpty()),
+    private fun Result.withState(mountpoint: String, mountsText: String?): Result {
+        val text = mountsText.orEmpty()
+        val type = mountedFsType(mountpoint, text)
+        return copy(
+            stateAfter = when {
+                text.isBlank() -> State.UNKNOWN
+                type != null -> State.MOUNTED_NFS
+                else -> State.NOT_MOUNTED
+            },
+            fsType = type,
         )
+    }
 
     private fun classifyUmountError(code: Int, err: String?, out: String? = null): Result {
         val e = err.orEmpty()
@@ -215,7 +224,7 @@ object RootMount {
             SuResult(proc.exitValue(), out?.takeIf { it.isNotBlank() }, err)
         }
     } catch (e: IOException) {
-        SuResult(127, null, e.message ?: "su not available")
+        SuResult(SU_NOT_EXECUTABLE_CODE, null, e.message ?: "su not available")
     } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
         SuResult(130, null, "interrupted")
@@ -233,10 +242,11 @@ object RootMount {
 
     /** v4 first, mirroring NfsSessions.select: v4 needs only TCP 2049 while v3 also
      *  needs rpcbind and mountd, so the narrower requirement is tried first. */
-    private val MOUNT_VERSIONS = listOf("4.2", "3")
+    internal val MOUNT_VERSIONS = listOf("4.2", "3")
 
     private val NFS_FS_TYPES = setOf("nfs", "nfs4")
 
-    /** What [exec] reports when the su binary cannot be executed at all. */
-    private const val SU_NOT_EXECUTABLE_CODE = 127
+    /** Outside the 0-255 wait-status range, so a shell inside the mount script can
+     *  never forge it: only [exec] failing to start su produces this. */
+    private const val SU_NOT_EXECUTABLE_CODE = -1
 }

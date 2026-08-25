@@ -5,7 +5,7 @@ Mount NFS storage on an Android device. Inspired by
 
 ## Status
 
-v0.4.0: browse NFS shares via SAF (rootless) and optionally kernel-mount them with
+v0.4.1: browse NFS shares via SAF (rootless) and optionally kernel-mount them with
 root. The SAF side (`NfsDocumentsProvider`) is the primary surface and speaks both
 NFSv4.1 and NFSv3, picking the version per configured export without asking: v4.1
 first, since it needs nothing but TCP 2049, then v3 for servers that still run

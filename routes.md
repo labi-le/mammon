@@ -22,7 +22,8 @@ Config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35.
 | `MountsParser.kt` / `RootMount.kt` | `/proc/mounts` line parser; kernel mounts via `su --mount-master -c` (nsenter fallback), state from /proc/1/mounts so the check matches the global namespace the mount landed in. |
 
 Unit tests (`app/src/test/kotlin/app/mammon/`, JUnit4, no Robolectric): `PathCodecTest`,
-`ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `NfsListFilterTest`.
+`ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `NfsListFilterTest`,
+`NfsListNullAttrsFallbackTest`.
 
 No services or receivers exist yet.
 

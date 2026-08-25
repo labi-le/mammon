@@ -1,3 +1,8 @@
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.File
 import java.util.Properties
@@ -15,8 +20,8 @@ android {
         applicationId = "app.mammon"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.5.1"
+        versionCode = 11
+        versionName = "0.6.0"
     }
 
     // Local releases sign when keystore.properties exists; absent file keeps them unsigned (CI parity).
@@ -53,6 +58,56 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+}
+
+// The Magisk module zip is a build product, not a checked-in blob: Gradle's own Zip
+// task packs magisk-module/ deterministically (fixed order and timestamp, unix modes
+// kept so the installer scripts stay executable), and a bridge task exposes the
+// zip-bearing directory as the generated assets dir the Variant API requires.
+val moduleFiles = fileTree(rootProject.file("magisk-module"))
+moduleFiles.exclude(".shellcheckrc")
+
+val packModuleZip = tasks.register<Zip>("packModuleZip") {
+    // Both flags together make rebuilds byte-identical: entries get a constant
+    // timestamp instead of per-file mtimes or the build time.
+    from(moduleFiles)
+    archiveFileName.set("mammon-module.zip")
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    destinationDirectory.set(temporaryDir)
+}
+
+abstract class ModuleAssetDirTask : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val zipFile: RegularFileProperty
+
+    /** addGeneratedSourceDirectory needs a producer exposing a DirectoryProperty,
+     *  which the Zip task's RegularFileProperty is not - the failed shape this
+     *  bridge replaces. */
+    @get:OutputDirectory
+    abstract val assetDir: DirectoryProperty
+
+    @TaskAction
+    fun expose() {
+        val dir = assetDir.get().asFile
+        dir.deleteRecursively()
+        dir.mkdirs()
+        zipFile.get().asFile.copyTo(File(dir, "mammon-module.zip"), overwrite = true)
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        val assetDirProvider = tasks.register(
+            "moduleZipAssets${variant.name.replaceFirstChar { ch -> ch.uppercase() }}",
+            ModuleAssetDirTask::class.java,
+        ) {
+            zipFile.set(packModuleZip.flatMap { zip -> zip.archiveFile })
+            assetDir.set(layout.buildDirectory.dir("generated/module-zip/${variant.name}"))
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(assetDirProvider) { task -> task.assetDir }
+    }
 }
 
 kotlin {

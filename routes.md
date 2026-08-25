@@ -13,7 +13,8 @@ Config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35.
 
 | File | Contents |
 |---|---|
-| `MainActivity.kt` | Two-card UI (SAF config + root mount), classic Views over `R.layout.activity_main`; saves `Prefs`, probes the share, fires ACTION_VIEW on the provider root, drives Mount/Unmount off the main thread. Mount hands `RootMount` a `FuseLaunch` built from `applicationInfo.sourceDir` and a log path under `cacheDir`, and the status line names the backing that landed. |
+| `MainActivity.kt` | Two-card UI (SAF config + root mount), classic Views over `R.layout.activity_main`; saves `Prefs`, probes the share, fires ACTION_VIEW on the provider root, drives Mount/Unmount and Install-module off the main thread. Mount hands `RootMount` a `FuseLaunch` built from `applicationInfo.sourceDir` and a log path under `cacheDir`, and the status line names the backing that landed. |
+| `ModuleInstall.kt` | The Install-module decision core, Android-free: the su probe script for `/data/adb/modules/mammon_fsloader`, the verdict mapping (a denied or timed-out probe is UNAVAILABLE, never silently absent), the staged-file policy (`cacheDir/mammon-module.zip`, truncated on every press). The zip itself is packed at build time by `packModuleZip` in `app/build.gradle.kts` and rides as an APK asset; installing happens in Magisk after a chooser hand-off, which mammon cannot observe. |
 | `Prefs.kt` | SharedPreferences: host, export, port (default 2049), last mountpoint; `spec()` re-parses into an `ExportSpec`. |
 | `ExportSpec.kt` | Parses "host[:port]:/export"; IPv6 literals bracketed; port range and traversal rejected. |
 | `PathCodec.kt` | documentId <-> export-absolute path; rejects "..", empty segments, leading/trailing slashes; `childPath` builds a directory entry's path and drops dot names. Every provider id passes through it. |
@@ -31,7 +32,7 @@ Config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35.
 
 Unit tests (`app/src/test/kotlin/app/mammon/`, JUnit4, no Robolectric): `PathCodecTest`,
 `ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `RootMountDiagnosisTest`,
-`NfsListFilterTest`, `NfsListNullAttrsFallbackTest`, `ManifestGuardTest`,
+`NfsListFilterTest`, `NfsListNullAttrsFallbackTest`, `ManifestGuardTest`, `ModuleInstallTest`,
 `NfsScannerTest`, `Fattr4CodecTest`, `NfsVersionSelectionTest`, `FuseReplyTest`,
 `FuseRefusalTest`, `DirentsTest`, `NodeTableTest`.
 
@@ -48,12 +49,16 @@ when `umount` makes the kernel send FUSE_DESTROY.
   `DocumentsProvider.attachInfo` refuses unprotected authorities), `grantUriPermissions=true`,
   `DOCUMENTS_PROVIDER` intent filter; SAF clients reach it through DocumentsUI, which holds
   that signature permission.
+- One unexported FileProvider `app.mammon.fileprovider` (cache-path via `res/xml/file_paths.xml`)
+  that hands the staged module zip to the user-chosen installer; both provider declarations
+  are pinned by `ManifestGuardTest`.
 - No foreground service, no boot receiver.
 
 ### Resources (`app/src/main/res/`)
 
 | Path | Purpose |
 |---|---|
+| `xml/file_paths.xml` | FileProvider cache-path for the staged module zip |
 | `values/strings.xml` | UI strings and NFS error messages |
 | `layout/activity_main.xml` | The whole MainActivity layout: SAF card + root mount card in one scroll view |
 | `values/themes.xml` | `Theme.Mammon`, based on `Theme.Material3.DayNight.NoActionBar` |

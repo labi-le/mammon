@@ -66,6 +66,13 @@ the definitive oracle for "does this device ship the support as files": it
 lists exactly what was found, what loaded or was refused, and what
 `/proc/filesystems` registered afterwards.
 
+Since v0.6.0 the app carries this module inside its own APK: `packModuleZip` in
+`app/build.gradle.kts` packs the directory deterministically into an asset, and an
+Install-module button stages it and hands it to a system chooser for Magisk to flash —
+mammon deliberately stops at that hand-off, because only Magisk completing its own flow
+proves an install (its probe distinguishes PRESENT from ABSENT, and treats a denied or
+timed-out su run as UNAVAILABLE rather than silently absent).
+
 ### Why the FUSE rung is pure Kotlin and ships no binary
 
 The obvious design — a JVM process that mounts `/dev/fuse` itself, or that hands the

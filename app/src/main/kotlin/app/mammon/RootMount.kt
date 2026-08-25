@@ -292,7 +292,11 @@ object RootMount {
         }
     }
 
-    private data class SuResult(val code: Int, val stdout: String?, val stderr: String)
+    internal data class SuResult(val code: Int, val stdout: String?, val stderr: String)
+
+    /** Read-only probes share the ladder's su chain (--mount-master plus nsenter fallback),
+     *  so their verdict sees the same namespace and degrades the same way on odd su builds. */
+    internal fun probe(script: String): SuResult = runSu(script)
 
     private fun runSu(script: String): SuResult {
         val r = exec("su", "--mount-master", "-c", script)

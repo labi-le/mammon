@@ -1,5 +1,6 @@
 package app.mammon
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -19,6 +20,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import androidx.core.content.FileProvider
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
@@ -40,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var openButton: Button
     private lateinit var mountBtn: Button
     private lateinit var unmountBtn: Button
+    private lateinit var installBtn: Button
     private lateinit var mountStatus: TextView
 
     private lateinit var scanButton: MaterialButton
@@ -66,6 +69,7 @@ class MainActivity : AppCompatActivity() {
         scanResults = findViewById(R.id.scan_results)
         mountBtn = findViewById(R.id.mount_button)
         unmountBtn = findViewById(R.id.unmount_button)
+        installBtn = findViewById(R.id.install_module_button)
 
         hostEdit.setText(prefs.host)
         exportEdit.setText(prefs.export)
@@ -80,11 +84,13 @@ class MainActivity : AppCompatActivity() {
         openButton.setOnClickListener { onOpenInFiles() }
         mountBtn.setOnClickListener { onMount(true) }
         unmountBtn.setOnClickListener { onMount(false) }
+        installBtn.setOnClickListener { onInstallModule() }
         scanButton.setOnClickListener { onScan() }
         saveButton.isEnabled = !PROBE_IN_FLIGHT.get()
         openButton.isEnabled = false
         mountBtn.isEnabled = !MOUNT_IN_FLIGHT.get()
         unmountBtn.isEnabled = !MOUNT_IN_FLIGHT.get()
+        installBtn.isEnabled = !INSTALL_IN_FLIGHT.get()
         scanButton.isEnabled = !SCAN_IN_FLIGHT.get()
 
         if (prefs.spec() != null && !PROBE_IN_FLIGHT.get()) {
@@ -243,6 +249,53 @@ class MainActivity : AppCompatActivity() {
         null -> result.message
     }
 
+    /**
+     * Probes for the module off the main thread like the sibling buttons; PRESENT only
+     * reports, everything else stages the packaged zip and hands it to a chooser. The
+     * hand-off deliberately claims nothing about success — only Magisk completing its
+     * own flow proves an install.
+     */
+    private fun onInstallModule() {
+        installBtn.isEnabled = false
+        mountStatus.setText(R.string.module_probe_working)
+        INSTALL_IN_FLIGHT.set(true)
+        thread(name = "module-install") {
+            val r = RootMount.probe(ModuleInstall.PROBE_SCRIPT)
+            val probe = ModuleInstall.classify(r.code, r.stdout)
+            runOnUiThread {
+                INSTALL_IN_FLIGHT.set(false)
+                installBtn.isEnabled = true
+                mountStatus.text = when (probe) {
+                    ModuleInstall.Probe.PRESENT -> getString(R.string.module_already_installed)
+                    ModuleInstall.Probe.UNAVAILABLE -> getString(R.string.module_probe_unavailable)
+                    ModuleInstall.Probe.ABSENT -> launchInstaller()
+                }
+            }
+        }
+    }
+
+    private fun launchInstaller(): String {
+        val staged = ModuleInstall.stagedFile(cacheDir)
+        try {
+            assets.open(ModuleInstall.ASSET_NAME).use { input ->
+                ModuleInstall.stageCopy(input, staged)
+            }
+        } catch (e: Exception) {
+            return getString(R.string.module_stage_failed)
+        }
+        val uri = FileProvider.getUriForFile(this, ModuleInstall.FILE_PROVIDER_AUTHORITY, staged)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/zip")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return try {
+            startActivity(Intent.createChooser(intent, getString(R.string.module_chooser_title)))
+            getString(R.string.module_handed_off)
+        } catch (e: ActivityNotFoundException) {
+            getString(R.string.module_no_handler)
+        }
+    }
+
     private fun onScan() {
         scanButton.isEnabled = false
         scanResults.removeAllViews()
@@ -287,7 +340,7 @@ class MainActivity : AppCompatActivity() {
         const val AUTHORITY = "app.mammon.nfs"
         const val PROBE_TIMEOUT_MS = 15_000L
 
-        /** In cacheDir so the root shell can write where the app can still read it. */
+        /** The log file name under cacheDir; the root shell writes where the app can still read. */
         private const val FUSE_LOG = "fuse-daemon.log"
 
         /** The fs type /proc/1/mounts shows for the FUSE rung, whose narrowings the
@@ -297,6 +350,10 @@ class MainActivity : AppCompatActivity() {
         /** Process-scoped so a recreated activity inherits the real mount/probe
          *  state instead of re-enabling buttons while work is still running. */
         private val MOUNT_IN_FLIGHT = AtomicBoolean(false)
+        private val INSTALL_IN_FLIGHT = AtomicBoolean(false)
+
+        /** Process-scoped so a recreated activity inherits the real mount/probe
+         *  state instead of re-enabling buttons while work is still running. */
         private val PROBE_IN_FLIGHT = AtomicBoolean(false)
         private val SCAN_IN_FLIGHT = AtomicBoolean(false)
         val PROBE_GENERATION = AtomicInteger(0)

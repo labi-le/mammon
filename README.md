@@ -27,6 +27,11 @@ lets the Mount ladder succeed afterwards. Honest limit: it can only load
 modules the device already ships — a kernel with the support compiled out
 needs a custom kernel.
 
+The app ships that same module inside itself: the **Install module** button stages
+`mammon-module.zip` from the APK's assets and opens the system chooser so you can flash
+it with Magisk. Mammon probes for an existing install first and never sees whether the
+flash succeeds — Magisk's own flow is the only proof.
+
 ## Build
 
 The toolchain (JDK 17, Android SDK 35) comes from the nix shell, so always build

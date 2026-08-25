@@ -25,6 +25,14 @@
     <string name="mount">Mount</string>
     <string name="unmount">Unmount</string>
     <string name="working">Working…</string>
+    <string name="install_module">Install module</string>
+    <string name="module_probe_working">Checking for the module…</string>
+    <string name="module_already_installed">Module already installed.</string>
+    <string name="module_probe_unavailable">Cannot check for the module: no working su right now.</string>
+    <string name="module_chooser_title">Install with</string>
+    <string name="module_handed_off">Handed to the installer — finish it there. Mammon cannot see whether it succeeds.</string>
+    <string name="module_no_handler">No app on this device can open the module zip.</string>
+    <string name="module_stage_failed">Could not unpack the module zip from the app.</string>
 
     <string name="mounted_state">Mounted (%1$s) at %2$s</string>
     <string name="mounted_state_fuse">Mounted at %1$s via the mammon FUSE daemon — read-only, files shown as owned by root.</string>

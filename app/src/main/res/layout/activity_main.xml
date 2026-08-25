@@ -160,6 +160,12 @@
                         android:text="@string/unmount" />
                 </LinearLayout>
 
+                <Button
+                    android:id="@+id/install_module_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/install_module" />
+
                 <TextView
                     android:id="@+id/mount_status"
                     android:layout_width="match_parent"

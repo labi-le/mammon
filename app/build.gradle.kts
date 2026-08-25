@@ -63,7 +63,7 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("androidx.appcompat:appcompat:1.8.0")
     implementation("com.google.android.material:material:1.14.0")
     implementation("com.emc.ecs:nfs-client:1.1.0")
     // Server library reused as a client: it carries the NFSv4.1 XDR types and

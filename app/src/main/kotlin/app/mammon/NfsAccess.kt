@@ -7,7 +7,7 @@ import com.emc.ecs.nfsclient.nfs.io.Nfs3File
 import com.emc.ecs.nfsclient.nfs.io.NfsFileInputStream
 import com.emc.ecs.nfsclient.nfs.nfs3.Nfs3
 import com.emc.ecs.nfsclient.network.NetMgr
-import com.emc.ecs.nfsclient.rpc.CredentialNone
+import com.emc.ecs.nfsclient.rpc.CredentialUnix
 import java.io.IOException
 import java.net.InetSocketAddress
 
@@ -22,7 +22,9 @@ import java.net.InetSocketAddress
  */
 class NfsAccess(private val spec: ExportSpec) : NfsSession {
 
-    private val nfs = Nfs3(spec.host, spec.export, CredentialNone(), RETRIES)
+    // AUTH_NONE gets the MOUNT accepted and the first GETATTR refused with
+    // NFS3ERR_ACCES on a stock Linux server; AUTH_SYS is what NfsV4Access sends too.
+    private val nfs = Nfs3(spec.host, spec.export, CredentialUnix(0, 0, null), RETRIES)
 
     override fun probeRoot(): NodeAttrs? {
         val root = nfs.newFile("/")

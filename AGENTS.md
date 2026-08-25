@@ -40,8 +40,10 @@ the three directions from [`docs/guides/architecture.md`](./docs/guides/architec
   `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
   as the fallback for servers that still run rpcbind and mountd.
 - **Root option — kernel mount** (direction A, best-effort): `RootMount` runs
-  `mount -t nfs` through `su --mount-master`; it reports plainly when the kernel lacks
-  NFS support. Direction B stays documented as future work.
+  `mount -t nfs` through `su --mount-master`, trying `vers=4.2` then `vers=3`; a failure
+  is separated into no usable `su`, a kernel without NFS, a kernel whose module for the
+  tried versions is not loaded, and everything else. Direction B stays documented as
+  future work.
 
 Out of scope so far: provider-side writes/rename/delete, Kerberos/RPCSEC_GSS, pNFS
 layouts, NFSv4 delegations and byte-range locks, foreground services, boot receivers,

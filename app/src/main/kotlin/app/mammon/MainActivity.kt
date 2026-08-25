@@ -212,15 +212,25 @@ class MainActivity : AppCompatActivity() {
                 mountBtn.isEnabled = true
                 unmountBtn.isEnabled = true
                 mountStatus.text = when {
-                    !result.ok -> result.message
+                    !result.ok -> mountFailureText(result)
                     state == RootMount.State.MOUNTED_NFS ->
-                        getString(R.string.mounted_state, "nfs", mp)
+                        getString(R.string.mounted_state, result.fsType ?: "nfs", mp)
                     state == RootMount.State.UNKNOWN -> getString(R.string.unknown_state)
                     doMount -> getString(R.string.not_mounted_after_mount)
                     else -> getString(R.string.not_mounted_state)
                 }
             }
         }
+    }
+
+    /** A failed unmount carries no diagnosis, so its own message stays the fallback. */
+    private fun mountFailureText(result: RootMount.Result): String = when (result.diagnosis) {
+        RootMount.MountDiagnosis.NO_ROOT -> getString(R.string.err_mount_no_root)
+        RootMount.MountDiagnosis.KERNEL_LACKS_NFS -> getString(R.string.err_mount_kernel_no_nfs)
+        RootMount.MountDiagnosis.VERSION_MODULE_MISSING ->
+            getString(R.string.err_mount_version_module)
+        RootMount.MountDiagnosis.GENERIC -> getString(R.string.err_mount_failed, result.message)
+        null -> result.message
     }
 
     private fun onScan() {

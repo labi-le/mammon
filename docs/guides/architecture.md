@@ -17,10 +17,14 @@ it needs only TCP 2049, and NFSv3 (`NfsAccess`, over `com.emc.ecs:nfs-client`) i
 fallback for servers that still publish rpcbind and mountd. An NFSv4-only server —
 the common modern default — was invisible to mammon before that.
 Direction A — kernel NFS via `mount -t nfs` under `su` — is implemented alongside it as
-a best-effort option (`RootMount`): it works only on devices whose kernel has NFS
-support and whose su setup lets the mount land in the global namespace; when the kernel
-lacks nfs.ko the UI says so plainly. Direction B remains below as a documented future
-option; nothing of it is built.
+a best-effort option (`RootMount`): it tries `vers=4.2` and then `vers=3`, mirroring the
+provider's v4-first order, and works only on devices whose kernel has NFS support and
+whose su setup lets the mount land in the global namespace. When it fails it separates
+the causes it can actually tell apart, because they need different fixes: no usable
+`su`, a kernel with neither `nfs` nor `nfs4` in `/proc/filesystems`, a kernel that has
+those types but no loaded module for the versions tried, and everything else. That file
+is world-readable, so the distinction costs no root. Direction B remains below as a
+documented future option; nothing of it is built.
 
 What follows the status lines is the original decision input, kept because it explains
 the shape of what was built and why B is still on the table.

@@ -23,9 +23,21 @@ object RootMount {
 
         /** Post-command state, classified from the /proc/1/mounts text captured by the same su run. */
         val stateAfter: State = State.UNKNOWN,
+
+        /** Set only on a failed mount; names the cause so the UI stops guessing at one. */
+        val diagnosis: MountDiagnosis? = null,
+
+        /** The nfs/nfs4 type found at the mountpoint, or null when nothing is mounted. */
+        val fsType: String? = null,
     )
 
     enum class State { MOUNTED_NFS, NOT_MOUNTED, UNKNOWN }
+
+    enum class MountDiagnosis { NO_ROOT, KERNEL_LACKS_NFS, VERSION_MODULE_MISSING, GENERIC }
+
+    /** One failed `mount` invocation, kept so a diagnosis can require that EVERY
+     *  attempted version failed the same way rather than just the last one. */
+    internal data class Attempt(val code: Int, val stderr: String)
 
     fun mountedState(mountpoint: String): State {
         val mountsText = runSu("cat /proc/1/mounts").stdout ?: return State.UNKNOWN
@@ -36,39 +48,86 @@ object RootMount {
      *  /proc/1/mounts text instead of spawning another su. */
     fun mountedState(mountpoint: String, mountsText: String): State {
         if (mountsText.isBlank()) return State.UNKNOWN
-        val entry = MountsParser.parse(mountsText).find {
-            it.mountPoint == mountpoint && (it.fsType == "nfs" || it.fsType == "nfs4")
+        return if (mountedFsType(mountpoint, mountsText) != null) {
+            State.MOUNTED_NFS
+        } else {
+            State.NOT_MOUNTED
         }
-        return if (entry != null) State.MOUNTED_NFS else State.NOT_MOUNTED
     }
+
+    /** The fs type the kernel actually registered, so the UI names the version it got
+     *  instead of assuming the one we asked for first. */
+    private fun mountedFsType(mountpoint: String, mountsText: String): String? =
+        MountsParser.parse(mountsText)
+            .find { it.mountPoint == mountpoint && it.fsType in NFS_FS_TYPES }
+            ?.fsType
 
     /** Kept for tests and diagnostics; unprivileged view, NOT namespace-consistent. */
     fun readOwnNamespaceMounts(): List<MountEntry> =
         MountsParser.parse(File("/proc/mounts").readText())
 
     fun mount(host: String, export: String, port: Int, mountpoint: String): Result {
-        val script = """
-            mkdir -p ${quote(mountpoint)} &&
-            mount -t nfs -o nolock,port=$port,tcp,vers=3 ${quote("$host:$export")} ${quote(mountpoint)} &&
-            cat /proc/1/mounts
-        """.trimIndent()
-        val r = runSu(script)
-        return when {
-            r.code == 0 -> Result(true, "mounted at $mountpoint").withState(mountpoint, r.stdout)
-            isUnknownSuFlag(r.stderr) -> {
-                val (c2, out2, e2) = runSuViaNsenter(script)
-                if (c2 == 0) Result(true, "mounted at $mountpoint").withState(mountpoint, out2)
-                else Result(false, "mount failed: ${firstLine(e2) ?: "exit $c2"}")
+        val failures = mutableListOf<SuResult>()
+        for (vers in MOUNT_VERSIONS) {
+            val r = runSu(mountScript(host, export, port, mountpoint, vers))
+            if (r.code == 0) {
+                return Result(true, "mounted at $mountpoint").withState(mountpoint, r.stdout)
             }
-            r.stderr.contains("no such device", true) ||
-                r.stderr.contains("unknown filesystem type", true) ->
-                Result(false, "kernel lacks NFS support (no nfs.ko)")
-            else -> Result(
-                false,
-                "mount failed: ${firstLine(r.stderr) ?: firstLine(r.stdout.orEmpty()) ?: "exit ${r.code}"}",
-            )
+            failures += r
+            // Without a usable su the next version fails identically, and each spawn can
+            // block for SU_TIMEOUT_SECONDS.
+            if (isSuUnavailable(r.code, r.stderr)) break
         }
+        val last = failures.last()
+        return Result(
+            ok = false,
+            message = firstLine(last.stderr)
+                ?: firstLine(last.stdout.orEmpty())
+                ?: "exit ${last.code}",
+            diagnosis = classifyMountFailure(
+                failures.map { Attempt(it.code, it.stderr) },
+                readFilesystems(),
+            ),
+        )
     }
+
+    private fun mountScript(
+        host: String,
+        export: String,
+        port: Int,
+        mountpoint: String,
+        vers: String,
+    ): String = """
+        mkdir -p ${quote(mountpoint)} &&
+        mount -t nfs -o nolock,port=$port,tcp,vers=$vers ${quote("$host:$export")} ${quote(mountpoint)} &&
+        cat /proc/1/mounts
+    """.trimIndent()
+
+    /** World-readable, so the fs-type half of a diagnosis costs no root. */
+    private fun readFilesystems(): String =
+        runCatching { File("/proc/filesystems").readText() }.getOrDefault("")
+
+    internal fun classifyMountFailure(
+        attempts: List<Attempt>,
+        filesystemsText: String,
+    ): MountDiagnosis = when {
+        attempts.any { isSuUnavailable(it.code, it.stderr) } -> MountDiagnosis.NO_ROOT
+        !hasNfsFilesystem(filesystemsText) -> MountDiagnosis.KERNEL_LACKS_NFS
+        attempts.isNotEmpty() && attempts.all { isUnknownFsType(it.stderr) } ->
+            MountDiagnosis.VERSION_MODULE_MISSING
+        else -> MountDiagnosis.GENERIC
+    }
+
+    private fun isSuUnavailable(code: Int, stderr: String): Boolean =
+        code == SU_NOT_EXECUTABLE_CODE || stderr.contains("Cannot run program", true)
+
+    private fun isUnknownFsType(stderr: String): Boolean =
+        stderr.contains("no such device", true) ||
+            stderr.contains("unknown filesystem type", true)
+
+    /** Compares the fs-type column of /proc/filesystems whole, so "nfsd" is not "nfs". */
+    private fun hasNfsFilesystem(filesystemsText: String): Boolean =
+        filesystemsText.lineSequence().any { it.substringAfterLast('\t').trim() in NFS_FS_TYPES }
 
     fun unmount(mountpoint: String): Result {
         val script = "umount ${quote(mountpoint)} && cat /proc/1/mounts"
@@ -85,7 +144,10 @@ object RootMount {
     }
 
     private fun Result.withState(mountpoint: String, mountsText: String?): Result =
-        copy(stateAfter = mountedState(mountpoint, mountsText.orEmpty()))
+        copy(
+            stateAfter = mountedState(mountpoint, mountsText.orEmpty()),
+            fsType = mountedFsType(mountpoint, mountsText.orEmpty()),
+        )
 
     private fun classifyUmountError(code: Int, err: String?, out: String? = null): Result {
         val e = err.orEmpty()
@@ -168,4 +230,13 @@ object RootMount {
     /** Bound on joining each drain future after a clean exit; the pipes sit at EOF
      *  by then, so this only guards a wedged reader. */
     private const val DRAIN_JOIN_SECONDS = 10L
+
+    /** v4 first, mirroring NfsSessions.select: v4 needs only TCP 2049 while v3 also
+     *  needs rpcbind and mountd, so the narrower requirement is tried first. */
+    private val MOUNT_VERSIONS = listOf("4.2", "3")
+
+    private val NFS_FS_TYPES = setOf("nfs", "nfs4")
+
+    /** What [exec] reports when the su binary cannot be executed at all. */
+    private const val SU_NOT_EXECUTABLE_CODE = 127
 }

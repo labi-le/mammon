@@ -21,11 +21,14 @@ class RootMountDiagnosisTest {
 
     private val withoutFuse = "nodev\tsysfs\n\text4\nnodev\tnfs\n"
 
+    /** Nothing registered: the state the b/c split exists for. */
+    private val bareProc = "nodev\tsysfs\n\text4\n"
     private fun classify(
         attempts: List<RootMount.Attempt>,
         filesystems: String,
         fuse: RootMount.FuseOutcome?,
-    ) = RootMount.classifyMountFailure(attempts, filesystems, fuse)
+        moduleDirs: String = "",
+    ) = RootMount.classifyMountFailure(attempts, filesystems, moduleDirs, fuse)
 
     @Test fun `su that cannot be started is reported as no root, never as a kernel claim`() {
         val attempts = listOf(
@@ -142,6 +145,67 @@ class RootMountDiagnosisTest {
         assertFalse(RootMount.hasFilesystem("nodev\tnfsd\n\tnfs_common\n", "nfs"))
         assertTrue(RootMount.hasFilesystem("nodev\tsysfs\n\text4\n", "ext4"))
         assertFalse(RootMount.hasFilesystem("", "fuse"))
+    }
+
+    /** The b/c split: with nothing registered at all, evidence of a module file on
+     *  the device must produce MODULE_FILES_PRESENT, and an empty listing must keep
+     *  the old verdict — otherwise the new string would fire on truly bare kernels. */
+    @Test fun `module files present with nothing registered names the unloadable module`() {
+        val attempts = listOf(
+            RootMount.Attempt(32, "mount: no such device"),
+            RootMount.Attempt(32, "mount: no such device"),
+        )
+
+        assertEquals(
+            RootMount.MountDiagnosis.MODULE_FILES_PRESENT,
+            classify(attempts, bareProc, null, "/vendor/lib/modules/fuse.ko\n"),
+        )
+        assertEquals(
+            RootMount.MountDiagnosis.MODULE_FILES_PRESENT,
+            classify(attempts, bareProc, null, "/system/lib/modules/nfs.ko\n"),
+        )
+    }
+
+    @Test fun `an empty module listing keeps the neither-nor verdict`() {
+        val attempts = listOf(
+            RootMount.Attempt(32, "mount: no such device"),
+            RootMount.Attempt(32, "mount: no such device"),
+        )
+        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withoutFuse, null))
+    }
+
+    /** The b/c split must not disturb the old verdicts: a FUSE rung that failed with
+     *  fuse unregistered and no module file anywhere is still the neither-nor case. */
+    @Test fun `failed fuse rung with no module files keeps the kernel verdict`() {
+        val attempts = listOf(RootMount.Attempt(1, "mount: unknown filesystem type 'fuse'"))
+
+        assertEquals(
+            RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+            classify(attempts, bareProc, RootMount.FuseOutcome.FAILED),
+        )
+        assertEquals(
+            RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+            classify(attempts, bareProc, RootMount.FuseOutcome.MOUNT_REFUSED),
+        )
+    }
+
+    /** A fuse.ko anywhere in the listing must be enough even when the kernel rungs
+     *  never got as far as a FUSE attempt. */
+    @Test fun `grep finds fuse dot ko among other module files`() {
+        val attempts = listOf(
+            RootMount.Attempt(32, "mount: no such device"),
+            RootMount.Attempt(32, "mount: no such device"),
+        )
+        val listing = """
+            /vendor/lib/modules/exfat.ko
+            /vendor/lib/modules/fuse.ko
+            /system/lib/modules/xt_qtaguid.ko
+        """.trimIndent()
+
+        assertEquals(
+            RootMount.MountDiagnosis.MODULE_FILES_PRESENT,
+            classify(attempts, bareProc, null, listing),
+        )
     }
 
     @Test fun `each FUSE script exit code maps to how far the rung got`() {

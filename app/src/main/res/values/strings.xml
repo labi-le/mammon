@@ -33,6 +33,7 @@
     <string name="not_mounted_after_mount">Mount command succeeded, but the share is not visible in the global mount table.</string>
     <string name="err_mount_no_root">No root access — su could not be started, or it never answered.</string>
     <string name="err_mount_kernel_no_fuse">This kernel has neither an NFS client nor FUSE (no nfs, nfs4 or fuse in /proc/filesystems) — nothing left to try.</string>
+    <string name="err_mount_module_files">NFS/FUSE support ships as a module on this device but could not be loaded: %1$s</string>
     <string name="err_mount_fuse_daemon">The FUSE mount was made, but the mammon daemon did not start: %1$s</string>
     <string name="err_mount_failed">Mount failed: %1$s</string>
     <string name="err_no_config">No NFS server configured yet. Save host and export first.</string>

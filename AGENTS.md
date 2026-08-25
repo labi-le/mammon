@@ -43,9 +43,12 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   kernel `mount -t nfs -o vers=4.2` through `su --mount-master`, then `vers=3`, then a
   pure-Kotlin FUSE daemon serving the same `NfsSession` the provider uses. A root shell
   opens `/dev/fuse` and calls `mount(2)`, so no native code and no bundled binary ship.
-  The status line names which backing landed. A run that exhausts the ladder is
-  separated into no usable `su`, a kernel that cannot give us FUSE, a FUSE mount whose
-  daemon never served, and everything else. The FUSE view is read-only, with uid/gid 0
+  The status line names which backing landed. Each rung best-effort modprobes its
+  filesystem's modules first, since Android kernels usually build nfs/fuse as
+  loadable modules that /proc/filesystems does not list until loaded. A run that
+  exhausts the ladder is separated into no usable `su`, a kernel that cannot give us
+  FUSE, module files present but nothing registered, a FUSE mount whose daemon never
+  served, and everything else. The FUSE view is read-only, with uid/gid 0
   and synthesised `0555`/`0444` modes. The daemon is proven against a real export on a
   Linux host; the end-to-end root chain on a phone is unverified — see the guide's
   Verification status before treating it as working.

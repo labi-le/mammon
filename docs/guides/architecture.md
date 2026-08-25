@@ -40,6 +40,18 @@ open, or `/proc/filesystems` has no `fuse` line, so no rung is left); a FUSE mou
 kernel accepted whose daemon then failed to serve; and everything else.
 `/proc/filesystems` is world-readable, so that distinction costs no root.
 
+Since v0.5.1 every rung first tries to load its filesystem's modules
+(`modprobe nfs`, `nfsv3`, `nfsv4` on the kernel rungs; `modprobe fuse` on the FUSE
+rung), best effort and silent: Android kernels usually build nfs/fuse as loadable
+modules that nothing registers until asked, and `/proc/filesystems` only lists what is
+registered, so an unloaded-but-available module used to read exactly like missing
+support. If the ladder still exhausts with none of nfs/nfs4/fuse registered, the
+module dirs decide between two verdicts: a candidate file under
+`/vendor/lib/modules` or `/system/lib/modules` (found by one `ls | grep -i` in the same
+root call) means the support ships as a module but would not load — its own message,
+since the fix differs from every other cause; an empty listing keeps the old
+"neither NFS client nor FUSE" wording for kernels that truly lack both.
+
 ### Why the FUSE rung is pure Kotlin and ships no binary
 
 The obvious design — a JVM process that mounts `/dev/fuse` itself, or that hands the

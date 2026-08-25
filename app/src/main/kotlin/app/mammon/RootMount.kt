@@ -13,6 +13,12 @@ import java.util.concurrent.TimeUnit
  * State checks read /proc/1/mounts (init = global namespace), never /proc/mounts,
  * which shows only our own namespace. Every user-controlled string is single-quoted
  * into the inner script; [quote] neutralizes embedded single quotes.
+ *
+ * Every rung best-effort modprobes its filesystem modules before mounting, because
+ * Android kernels usually build nfs/fuse as loadable modules and /proc/filesystems
+ * lists only what is already registered — an unloaded module reads like absent
+ * support there. When the ladder still runs out with no fs registered, the module
+ * dirs decide between "ships as a module but would not load" and truly absent.
  */
 object RootMount {
 
@@ -36,7 +42,7 @@ object RootMount {
 
     enum class State { MOUNTED, NOT_MOUNTED, UNKNOWN }
 
-    enum class MountDiagnosis { NO_ROOT, KERNEL_LACKS_FUSE, FUSE_DAEMON_FAILED, GENERIC }
+    enum class MountDiagnosis { NO_ROOT, KERNEL_LACKS_FUSE, MODULE_FILES_PRESENT, FUSE_DAEMON_FAILED, GENERIC }
 
     /** How far the FUSE rung got, or null when the ladder never reached it. */
     internal enum class FuseOutcome { NO_DEVICE, MOUNT_REFUSED, DAEMON_SILENT, MOUNT_UNRESPONSIVE, FAILED }
@@ -98,7 +104,12 @@ object RootMount {
         fuse: FuseOutcome?,
         launch: FuseLaunch,
     ): Result {
-        val diagnosis = classifyMountFailure(attempts, readFilesystems(), fuse)
+        val diagnosis = classifyMountFailure(
+            attempts,
+            readFilesystems(),
+            if (attempts.any { isRootUnavailable(it.code) }) "" else readModuleDirs(),
+            fuse,
+        )
         return Result(
             ok = false,
             message = daemonMessage(diagnosis, launch)
@@ -123,10 +134,25 @@ object RootMount {
         mountpoint: String,
         vers: String,
     ): String = """
+        ${preloadLine("nfs nfsv3 nfsv4")}
         mkdir -p ${quote(mountpoint)} &&
         mount -t nfs -o nolock,port=$port,tcp,vers=$vers ${quote("$host:$export")} ${quote(mountpoint)} &&
         cat /proc/1/mounts
     """.trimIndent()
+
+    /** Android kernels usually build these filesystems as modules that nothing loads
+     *  until a mount asks, and /proc/filesystems lists only what is already
+     *  registered — so a loadable-but-unloaded module reads exactly like missing
+     *  support. Best effort: failures stay silent so built-in kernels are unaffected. */
+    private fun preloadLine(types: String): String =
+        types.split(' ').joinToString(" ") { "modprobe $it 2>/dev/null || true" }
+
+    /** The module directories a device may ship kernel modules under, listed once per
+     *  failed mount() beside readFilesystems(); the classifier needs to tell an
+     *  unloadable module apart from absent support, and this is the only evidence
+     *  available for that. */
+    private fun readModuleDirs(): String =
+        runSu("ls /vendor/lib/modules /system/lib/modules 2>/dev/null | grep -i -E 'nfs|fuse' || true").stdout.orEmpty()
 
     /**
      * The proven launch chain: the shell owns /dev/fuse, hands the descriptor to
@@ -157,6 +183,7 @@ object RootMount {
             : > $log 2>/dev/null
             chmod 0644 $log 2>/dev/null
             mkdir -p $mp || exit $FUSE_MKDIR_FAILED
+            ${preloadLine("fuse")}
             exec 3<>/dev/fuse || exit $FUSE_NO_DEVICE
             mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse $mp || exit $FUSE_MOUNT_REFUSED
             if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
@@ -178,9 +205,13 @@ object RootMount {
     private fun readFilesystems(): String =
         runCatching { File("/proc/filesystems").readText() }.getOrDefault("")
 
+    /** The kernel's fs list says whether the support is registered; a module file in a
+     *  vendor/system dir says whether it exists at all. Absent + present file means the
+     *  ladder failed where modprobe should have worked, which needs its own message. */
     internal fun classifyMountFailure(
         attempts: List<Attempt>,
         filesystemsText: String,
+        moduleDirsText: String,
         fuse: FuseOutcome?,
     ): MountDiagnosis = when {
         attempts.any { isRootUnavailable(it.code) } -> MountDiagnosis.NO_ROOT
@@ -188,6 +219,13 @@ object RootMount {
             MountDiagnosis.KERNEL_LACKS_FUSE
         fuse == FuseOutcome.DAEMON_SILENT || fuse == FuseOutcome.MOUNT_UNRESPONSIVE ->
             MountDiagnosis.FUSE_DAEMON_FAILED
+        hasFilesystem(filesystemsText, "nfs") || hasFilesystem(filesystemsText, "nfs4") ||
+            hasFilesystem(filesystemsText, "fuse") ->
+            MountDiagnosis.GENERIC
+        moduleDirsText.isNotBlank() -> MountDiagnosis.MODULE_FILES_PRESENT
+        // Nothing registered and no module file anywhere: the rung-3 verdict keeps its
+        // old name, while a ladder that stopped earlier never had a FUSE verdict.
+        fuse != null -> MountDiagnosis.KERNEL_LACKS_FUSE
         else -> MountDiagnosis.GENERIC
     }
 

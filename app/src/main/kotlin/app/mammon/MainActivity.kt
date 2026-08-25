@@ -235,6 +235,8 @@ class MainActivity : AppCompatActivity() {
     private fun mountFailureText(result: RootMount.Result): String = when (result.diagnosis) {
         RootMount.MountDiagnosis.NO_ROOT -> getString(R.string.err_mount_no_root)
         RootMount.MountDiagnosis.KERNEL_LACKS_FUSE -> getString(R.string.err_mount_kernel_no_fuse)
+        RootMount.MountDiagnosis.MODULE_FILES_PRESENT ->
+            getString(R.string.err_mount_module_files, result.message)
         RootMount.MountDiagnosis.FUSE_DAEMON_FAILED ->
             getString(R.string.err_mount_fuse_daemon, result.message)
         RootMount.MountDiagnosis.GENERIC -> getString(R.string.err_mount_failed, result.message)

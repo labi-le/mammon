@@ -1,58 +1,62 @@
 package app.mammon
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The mount diagnosis must name the cause the user can act on. Each branch is driven
- * from a synthetic (exit code, stderr, /proc/filesystems) triple, so no root, no device
- * and no kernel are needed to pin the ordering down.
+ * The mount diagnosis must name the cause the user can act on. Each branch is driven from
+ * a synthetic (exit code, stderr, /proc/filesystems, FUSE outcome) tuple, so no root, no
+ * /dev/fuse and no kernel are needed to pin the ordering down.
+ *
+ * The ordering is the substance: root missing outranks everything because every rung
+ * below it was never really attempted, and the kernel's own fs-type list outranks the
+ * script's guess because the script only sees a failed command.
  */
 class RootMountDiagnosisTest {
 
-    private val withNfs = """
-        nodev	sysfs
-        	ext4
-        nodev	fuse
-        nodev	nfs
-        nodev	nfs4
-    """.trimIndent()
+    private val withFuse = "nodev\tsysfs\n\text4\nnodev\tfuse\nnodev\tnfs\nnodev\tnfs4\n"
 
-    private val withoutNfs = """
-        nodev	sysfs
-        	ext4
-        nodev	fuse
-    """.trimIndent()
+    private val withoutFuse = "nodev\tsysfs\n\text4\nnodev\tnfs\n"
 
     private fun classify(
         attempts: List<RootMount.Attempt>,
         filesystems: String,
-    ) = RootMount.classifyMountFailure(attempts, filesystems)
+        fuse: RootMount.FuseOutcome?,
+    ) = RootMount.classifyMountFailure(attempts, filesystems, fuse)
 
     @Test fun `su that cannot be started is reported as no root, never as a kernel claim`() {
         val attempts = listOf(
             RootMount.Attempt(-1, "Cannot run program \"su\": error=2, No such file or directory"),
         )
 
-        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withNfs))
-        // The kernel here HAS nfs; an su that never started must not be blamed on it.
-        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withoutNfs))
+        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withFuse, null))
+        // The kernel here HAS fuse; an su that never started must not be blamed on it.
+        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withoutFuse, null))
     }
 
     @Test fun `an su that never answered is no root, not a kernel verdict`() {
         val attempts = listOf(RootMount.Attempt(124, "su timed out"))
 
-        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withNfs))
-        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withoutNfs))
+        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withFuse, null))
+        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withoutFuse, null))
     }
 
-    @Test fun `no root outranks an ENODEV from another version`() {
+    @Test fun `no root outranks every FUSE outcome`() {
         val attempts = listOf(
             RootMount.Attempt(32, "mount: no such device"),
             RootMount.Attempt(-1, "Cannot run program \"su\""),
         )
 
-        assertEquals(RootMount.MountDiagnosis.NO_ROOT, classify(attempts, withNfs))
+        for (outcome in RootMount.FuseOutcome.entries) {
+            assertEquals(
+                outcome.name,
+                RootMount.MountDiagnosis.NO_ROOT,
+                classify(attempts, withFuse, outcome),
+            )
+        }
     }
 
     /** 127 is what a shell returns for command-not-found, so a rooted device missing
@@ -63,67 +67,91 @@ class RootMountDiagnosisTest {
             RootMount.Attempt(127, "sh: nsenter: not found"),
         )
 
-        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withNfs))
+        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withFuse, null))
     }
 
-    @Test fun `absent nfs and nfs4 fs types are reported as a kernel without NFS`() {
-        val attempts = listOf(
-            RootMount.Attempt(32, "mount: unknown filesystem type 'nfs'"),
-            RootMount.Attempt(32, "mount: unknown filesystem type 'nfs'"),
-        )
-
-        assertEquals(RootMount.MountDiagnosis.KERNEL_LACKS_NFS, classify(attempts, withoutNfs))
-    }
-
-    @Test fun `nfs4 alone still counts as kernel NFS support`() {
-        val onlyV4 = "nodev\tsysfs\nnodev\tnfs4"
-        val attempts = listOf(
-            RootMount.Attempt(32, "mount: no such device"),
-            RootMount.Attempt(32, "mount: no such device"),
-        )
-
-        assertEquals(RootMount.MountDiagnosis.VERSION_MODULE_MISSING, classify(attempts, onlyV4))
-    }
-
-    @Test fun `a name that merely contains nfs is not the nfs fs type`() {
-        val attempts = listOf(RootMount.Attempt(1, "mount: some other failure"))
+    @Test fun `a FUSE rung that found no device is a kernel that cannot give us FUSE`() {
+        val attempts = listOf(RootMount.Attempt(1, "mount: /dev/fuse: No such file or directory"))
 
         assertEquals(
-            RootMount.MountDiagnosis.KERNEL_LACKS_NFS,
-            classify(attempts, "nodev\tnfsd\n\tnfs_common"),
+            RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+            classify(attempts, withFuse, RootMount.FuseOutcome.NO_DEVICE),
         )
     }
 
-    @Test fun `ENODEV from every attempted version with the fs type present blames the module`() {
-        val attempts = listOf(
-            RootMount.Attempt(32, "mount: no such device"),
-            RootMount.Attempt(32, "mount: unknown filesystem type 'nfs'"),
-        )
+    @Test fun `a kernel without a fuse line outranks whatever the FUSE script concluded`() {
+        val attempts = listOf(RootMount.Attempt(1, "mount: unknown filesystem type 'fuse'"))
 
-        assertEquals(RootMount.MountDiagnosis.VERSION_MODULE_MISSING, classify(attempts, withNfs))
+        for (outcome in RootMount.FuseOutcome.entries) {
+            assertEquals(
+                outcome.name,
+                RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+                classify(attempts, withoutFuse, outcome),
+            )
+        }
     }
 
-    @Test fun `ENODEV on only one version is not a module verdict`() {
-        val attempts = listOf(
-            RootMount.Attempt(32, "mount: no such device"),
-            RootMount.Attempt(1, "mount.nfs: access denied by server"),
-        )
-
-        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withNfs))
-    }
-
-    @Test fun `any other failure stays generic`() {
-        val attempts = listOf(
-            RootMount.Attempt(1, "mount.nfs: Connection timed out"),
-            RootMount.Attempt(1, "mount.nfs: Connection timed out"),
-        )
-
-        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withNfs))
-    }
-
-    @Test fun `an unreadable proc filesystems does not become a kernel-supports-NFS claim`() {
+    @Test fun `an unreadable proc filesystems does not become a fuse-capable claim`() {
         val attempts = listOf(RootMount.Attempt(1, "mount.nfs: Connection timed out"))
 
-        assertEquals(RootMount.MountDiagnosis.KERNEL_LACKS_NFS, classify(attempts, ""))
+        assertEquals(
+            RootMount.MountDiagnosis.KERNEL_LACKS_FUSE,
+            classify(attempts, "", RootMount.FuseOutcome.FAILED),
+        )
+    }
+
+    @Test fun `a mounted FUSE whose daemon never served blames the daemon, not the kernel`() {
+        val attempts = listOf(RootMount.Attempt(1, "mount.nfs: Connection timed out"))
+
+        assertEquals(
+            RootMount.MountDiagnosis.FUSE_DAEMON_FAILED,
+            classify(attempts, withFuse, RootMount.FuseOutcome.DAEMON_SILENT),
+        )
+        assertEquals(
+            RootMount.MountDiagnosis.FUSE_DAEMON_FAILED,
+            classify(attempts, withFuse, RootMount.FuseOutcome.MOUNT_UNRESPONSIVE),
+        )
+    }
+
+    @Test fun `a refused or otherwise failed FUSE mount on a fuse-capable kernel stays generic`() {
+        val attempts = listOf(RootMount.Attempt(1, "mount.nfs: Connection timed out"))
+
+        assertEquals(
+            RootMount.MountDiagnosis.GENERIC,
+            classify(attempts, withFuse, RootMount.FuseOutcome.MOUNT_REFUSED),
+        )
+        assertEquals(
+            RootMount.MountDiagnosis.GENERIC,
+            classify(attempts, withFuse, RootMount.FuseOutcome.FAILED),
+        )
+    }
+
+    @Test fun `a ladder that never reached the FUSE rung gets no FUSE verdict`() {
+        val attempts = listOf(
+            RootMount.Attempt(32, "mount: no such device"),
+            RootMount.Attempt(32, "mount: no such device"),
+        )
+
+        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withoutFuse, null))
+        assertEquals(RootMount.MountDiagnosis.GENERIC, classify(attempts, withFuse, null))
+    }
+
+    @Test fun `a fs type is matched on the whole column, so fuseblk is not fuse`() {
+        assertTrue(RootMount.hasFilesystem("nodev\tfuse\n", "fuse"))
+        assertFalse(RootMount.hasFilesystem("nodev\tfuseblk\n", "fuse"))
+        assertFalse(RootMount.hasFilesystem("nodev\tnfsd\n\tnfs_common\n", "nfs"))
+        assertTrue(RootMount.hasFilesystem("nodev\tsysfs\n\text4\n", "ext4"))
+        assertFalse(RootMount.hasFilesystem("", "fuse"))
+    }
+
+    @Test fun `each FUSE script exit code maps to how far the rung got`() {
+        assertNull(RootMount.fuseOutcomeFor(0))
+        assertEquals(RootMount.FuseOutcome.FAILED, RootMount.fuseOutcomeFor(71))
+        assertEquals(RootMount.FuseOutcome.NO_DEVICE, RootMount.fuseOutcomeFor(73))
+        assertEquals(RootMount.FuseOutcome.MOUNT_REFUSED, RootMount.fuseOutcomeFor(74))
+        assertEquals(RootMount.FuseOutcome.DAEMON_SILENT, RootMount.fuseOutcomeFor(75))
+        assertEquals(RootMount.FuseOutcome.MOUNT_UNRESPONSIVE, RootMount.fuseOutcomeFor(76))
+        assertEquals(RootMount.FuseOutcome.FAILED, RootMount.fuseOutcomeFor(1))
+        assertEquals(RootMount.FuseOutcome.FAILED, RootMount.fuseOutcomeFor(255))
     }
 }

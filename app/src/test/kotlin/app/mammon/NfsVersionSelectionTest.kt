@@ -1,8 +1,6 @@
 package app.mammon
 
-import java.io.ByteArrayInputStream
 import java.io.IOException
-import java.io.InputStream
 import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,7 +20,7 @@ class NfsVersionSelectionTest {
         override fun probeRoot(): NodeAttrs? = null
         override fun stat(docId: String): NodeAttrs? = null
         override fun list(docId: String): List<ChildEntry> = emptyList()
-        override fun streamFor(docId: String): InputStream = ByteArrayInputStream(ByteArray(0))
+        override fun openFile(docId: String): NfsFile = throw IOException("no such file")
         override fun close() { closed = true }
     }
 

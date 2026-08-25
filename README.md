@@ -5,12 +5,17 @@ Mount NFS storage on an Android device. Inspired by
 
 ## Status
 
-v0.4.1: browse NFS shares via SAF (rootless) and optionally kernel-mount them with
+v0.5.0: browse NFS shares via SAF (rootless) and optionally mount them for real with
 root. The SAF side (`NfsDocumentsProvider`) is the primary surface and speaks both
 NFSv4.1 and NFSv3, picking the version per configured export without asking: v4.1
 first, since it needs nothing but TCP 2049, then v3 for servers that still run
-rpcbind and mountd. The root mount is best-effort — it needs a kernel with NFS
-support and a su setup that mounts into the global namespace. Design history in
+rpcbind and mountd. One Mount button tries three rungs in order — kernel NFS
+`vers=4.2`, kernel NFS `vers=3`, then a FUSE daemon written in the same Kotlin and
+serving the same NFS session — and the status line says which backing landed. There is
+no native code and no bundled binary: a root shell opens `/dev/fuse`, the app serves
+the protocol. The kernel rungs need a kernel with NFS support and a su setup that
+mounts into the global namespace; the FUSE view is read-only and synthesises ownership
+and permissions. Design history and the full list of narrowings in
 `docs/guides/architecture.md`.
 
 ## Build

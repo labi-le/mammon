@@ -18,7 +18,7 @@ nix-shell --run './gradlew :app:lintDebug'
 | `settings.gradle.kts` | Gradle settings; registers the `:app` module |
 | `build.gradle.kts` | Root build script; plugin versions |
 | `app/` | The single module: application code, manifest, resources |
-| `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFSv4.1 and NFSv3 session implementations behind one interface, root-mount plumbing, prefs/spec parsing |
+| `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFSv4.1 and NFSv3 session implementations behind one interface, the FUSE daemon serving that same interface, root-mount plumbing, prefs/spec parsing |
 | `app/src/main/res/` | Resources: M3 theme (`Theme.Mammon`), strings, adaptive launcher icons |
 | `app/build.gradle.kts` | Module build config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35 |
 | `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |
@@ -31,23 +31,28 @@ nix-shell --run './gradlew :app:lintDebug'
 ## Current intent
 
 mammon is an Android app for reading NFS storage on a device, inspired by
-[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.4.1 implements two of
-the three directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
+[bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.5.0 implements all three
+directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 
 - **Primary — rootless SAF browsing** (direction C): `NfsDocumentsProvider` exposes the
   configured export to any file manager. Two protocol versions sit behind the
   `NfsSession` interface and are chosen per export with no UI switch — NFSv4.1 over
   `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
   as the fallback for servers that still run rpcbind and mountd.
-- **Root option — kernel mount** (direction A, best-effort): `RootMount` runs
-  `mount -t nfs` through `su --mount-master`, trying `vers=4.2` then `vers=3`; a failure
-  is separated into no usable `su`, a kernel without NFS, a kernel whose module for the
-  tried versions is not loaded, and everything else. Direction B stays documented as
-  future work.
+- **Root option — one Mount button, three rungs** (directions A and B): `RootMount` tries
+  kernel `mount -t nfs -o vers=4.2` through `su --mount-master`, then `vers=3`, then a
+  pure-Kotlin FUSE daemon serving the same `NfsSession` the provider uses. A root shell
+  opens `/dev/fuse` and calls `mount(2)`, so no native code and no bundled binary ship.
+  The status line names which backing landed. A run that exhausts the ladder is
+  separated into no usable `su`, a kernel that cannot give us FUSE, a FUSE mount whose
+  daemon never served, and everything else. The FUSE view is read-only, with uid/gid 0
+  and synthesised `0555`/`0444` modes. The daemon is proven against a real export on a
+  Linux host; the end-to-end root chain on a phone is unverified — see the guide's
+  Verification status before treating it as working.
 
-Out of scope so far: provider-side writes/rename/delete, Kerberos/RPCSEC_GSS, pNFS
-layouts, NFSv4 delegations and byte-range locks, foreground services, boot receivers,
-automount-on-boot, caching layers.
+Out of scope so far: provider-side writes/rename/delete, any write through FUSE,
+Kerberos/RPCSEC_GSS, pNFS layouts, NFSv4 delegations and byte-range locks, foreground
+services, boot receivers, automount-on-boot, caching layers.
 
 ## Verification expectations
 

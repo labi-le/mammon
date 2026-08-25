@@ -15,6 +15,17 @@ data class NodeAttrs(val isDirectory: Boolean, val size: Long, val lastModifiedM
 data class ChildEntry(val path: String, val attributes: NodeAttrs)
 
 /**
+ * One open regular file. FUSE issues reads at arbitrary offsets from arbitrary
+ * threads, which a sequential [InputStream] cannot serve, so the offset lives in the
+ * call rather than in the handle.
+ */
+interface NfsFile : Closeable {
+
+    /** Reads up to [len] bytes at [offset] into [dst]; returns the count read, 0 at end of file. */
+    fun readAt(offset: Long, dst: ByteArray, off: Int, len: Int): Int
+}
+
+/**
  * The read-only operations [NfsDocumentsProvider] performs, over one long-lived
  * server session. Every method blocks on network I/O: callers must stay off the
  * main thread.
@@ -30,7 +41,29 @@ interface NfsSession : Closeable {
     /** Children of the directory named by [docId], directories first. */
     fun list(docId: String): List<ChildEntry>
 
-    fun streamFor(docId: String): InputStream
+    /** Opens [docId] for reading; throws when it is missing or not a regular file. */
+    fun openFile(docId: String): NfsFile
+
+    fun streamFor(docId: String): InputStream = NfsFileStream(openFile(docId))
+}
+
+/** The sequential view of an [NfsFile] that SAF's openDocument needs. */
+private class NfsFileStream(private val file: NfsFile) : InputStream() {
+
+    private var offset = 0L
+    private val single = ByteArray(1)
+
+    override fun read(): Int = if (read(single, 0, 1) < 0) -1 else single[0].toInt() and 0xff
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        if (len == 0) return 0
+        val n = file.readAt(offset, b, off, len)
+        if (n <= 0) return -1
+        offset += n
+        return n
+    }
+
+    override fun close() = file.close()
 }
 
 /** The ordering [NfsSession.list] promises, kept in one place so the two do not drift. */

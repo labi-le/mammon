@@ -17,6 +17,7 @@ import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -202,7 +203,13 @@ class MainActivity : AppCompatActivity() {
         MOUNT_IN_FLIGHT.set(true)
         thread(name = "root-mount") {
             val result = if (doMount) {
-                RootMount.mount(spec!!.host, spec.export, spec.port, mp)
+                RootMount.mount(
+                    spec!!.host,
+                    spec.export,
+                    spec.port,
+                    mp,
+                    RootMount.FuseLaunch(applicationInfo.sourceDir, File(cacheDir, FUSE_LOG).path),
+                )
             } else {
                 RootMount.unmount(mp)
             }
@@ -213,6 +220,7 @@ class MainActivity : AppCompatActivity() {
                 unmountBtn.isEnabled = true
                 mountStatus.text = when {
                     !result.ok -> mountFailureText(result)
+                    result.fsType == FUSE_FS_TYPE -> getString(R.string.mounted_state_fuse, mp)
                     result.fsType != null ->
                         getString(R.string.mounted_state, result.fsType, mp)
                     state == RootMount.State.UNKNOWN -> getString(R.string.unknown_state)
@@ -226,11 +234,9 @@ class MainActivity : AppCompatActivity() {
     /** A failed unmount carries no diagnosis, so its own message stays the fallback. */
     private fun mountFailureText(result: RootMount.Result): String = when (result.diagnosis) {
         RootMount.MountDiagnosis.NO_ROOT -> getString(R.string.err_mount_no_root)
-        RootMount.MountDiagnosis.KERNEL_LACKS_NFS -> getString(R.string.err_mount_kernel_no_nfs)
-        RootMount.MountDiagnosis.VERSION_MODULE_MISSING -> getString(
-            R.string.err_mount_version_module,
-            RootMount.MOUNT_VERSIONS.joinToString(" and "),
-        )
+        RootMount.MountDiagnosis.KERNEL_LACKS_FUSE -> getString(R.string.err_mount_kernel_no_fuse)
+        RootMount.MountDiagnosis.FUSE_DAEMON_FAILED ->
+            getString(R.string.err_mount_fuse_daemon, result.message)
         RootMount.MountDiagnosis.GENERIC -> getString(R.string.err_mount_failed, result.message)
         null -> result.message
     }
@@ -278,6 +284,13 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val AUTHORITY = "app.mammon.nfs"
         const val PROBE_TIMEOUT_MS = 15_000L
+
+        /** In cacheDir so the root shell can write where the app can still read it. */
+        private const val FUSE_LOG = "fuse-daemon.log"
+
+        /** The fs type /proc/1/mounts shows for the FUSE rung, whose narrowings the
+         *  kernel-NFS wording would misstate. */
+        private const val FUSE_FS_TYPE = "fuse"
 
         /** Process-scoped so a recreated activity inherits the real mount/probe
          *  state instead of re-enabling buttons while work is still running. */

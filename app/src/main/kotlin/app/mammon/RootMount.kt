@@ -3,10 +3,9 @@ package app.mammon
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
 
 /**
- * Kernel NFS mounts driven through `su`.
+ * Root mounts driven through `su`: kernel NFS first, then mammon's own FUSE daemon.
  *
  * Mounts must land in the GLOBAL mount namespace or nothing outside the su daemon
  * ever sees them, so commands run under `su --mount-master` (Magisk's global mode);
@@ -27,15 +26,22 @@ object RootMount {
         /** Set only on a failed mount; names the cause so the UI stops guessing at one. */
         val diagnosis: MountDiagnosis? = null,
 
-        /** The nfs/nfs4 type found at the mountpoint, or null when nothing is mounted. */
+        /** The nfs/nfs4/fuse type found at the mountpoint, or null when nothing is mounted. */
         val fsType: String? = null,
     )
 
-    enum class State { MOUNTED_NFS, NOT_MOUNTED, UNKNOWN }
+    /** What the FUSE rung needs from the app: the APK to put on the daemon's classpath
+     *  and a file both sides can read, since the root shell cannot call back into us. */
+    data class FuseLaunch(val apkPath: String, val logPath: String)
 
-    enum class MountDiagnosis { NO_ROOT, KERNEL_LACKS_NFS, VERSION_MODULE_MISSING, GENERIC }
+    enum class State { MOUNTED, NOT_MOUNTED, UNKNOWN }
 
-    /** One failed `mount` invocation, kept so a diagnosis can require that EVERY
+    enum class MountDiagnosis { NO_ROOT, KERNEL_LACKS_FUSE, FUSE_DAEMON_FAILED, GENERIC }
+
+    /** How far the FUSE rung got, or null when the ladder never reached it. */
+    internal enum class FuseOutcome { NO_DEVICE, MOUNT_REFUSED, DAEMON_SILENT, MOUNT_UNRESPONSIVE, FAILED }
+
+    /** One failed kernel `mount` invocation, kept so a diagnosis can require that EVERY
      *  attempted version failed the same way rather than just the last one. */
     internal data class Attempt(val code: Int, val stderr: String)
 
@@ -49,49 +55,68 @@ object RootMount {
     fun mountedState(mountpoint: String, mountsText: String): State {
         if (mountsText.isBlank()) return State.UNKNOWN
         return if (mountedFsType(mountpoint, mountsText) != null) {
-            State.MOUNTED_NFS
+            State.MOUNTED
         } else {
             State.NOT_MOUNTED
         }
     }
 
-    /** The fs type the kernel actually registered, so the UI names the version it got
-     *  instead of assuming the one we asked for first. */
+    /** The fs type the kernel actually registered, so the UI names the backing it got
+     *  instead of assuming the rung we tried first. */
     private fun mountedFsType(mountpoint: String, mountsText: String): String? =
         MountsParser.parse(mountsText)
-            .find { it.mountPoint == mountpoint && it.fsType in NFS_FS_TYPES }
+            .find { it.mountPoint == mountpoint && it.fsType in MOUNTED_FS_TYPES }
             ?.fsType
 
     /** Kept for tests and diagnostics; unprivileged view, NOT namespace-consistent. */
     fun readOwnNamespaceMounts(): List<MountEntry> =
         MountsParser.parse(File("/proc/mounts").readText())
 
-    fun mount(host: String, export: String, port: Int, mountpoint: String): Result {
-        val failures = mutableListOf<SuResult>()
+    fun mount(host: String, export: String, port: Int, mountpoint: String, fuse: FuseLaunch): Result {
+        val attempts = mutableListOf<Attempt>()
         for (vers in MOUNT_VERSIONS) {
-            val r = runSu(mountScript(host, export, port, mountpoint, vers))
-            if (r.code == 0) {
-                return Result(true, "mounted at $mountpoint").withState(mountpoint, r.stdout)
-            }
-            failures += r
+            val r = runSu(kernelMountScript(host, export, port, mountpoint, vers))
+            if (r.code == 0) return mounted(mountpoint, r.stdout)
+            attempts += Attempt(r.code, r.stderr)
             // Neither a missing su nor an unanswered prompt gets better on the next
-            // version, and each spawn can block for SU_TIMEOUT_SECONDS.
-            if (isRootUnavailable(r.code)) break
+            // rung, and each spawn can block for SU_TIMEOUT_SECONDS.
+            if (isRootUnavailable(r.code)) return failed(attempts, r, null, fuse)
         }
-        val last = failures.last()
+        val f = runSu(fuseMountScript(host, export, port, mountpoint, fuse))
+        if (f.code == 0) return mounted(mountpoint, f.stdout)
+        return failed(attempts, f, fuseOutcomeFor(f.code), fuse)
+    }
+
+    private fun mounted(mountpoint: String, mountsText: String?): Result =
+        Result(true, "mounted at $mountpoint").withState(mountpoint, mountsText)
+
+    /** The FUSE rung is deliberately absent from [attempts]: root is already proven by
+     *  the time it runs, so its own timeout is a hung script, not a missing su. */
+    private fun failed(
+        attempts: List<Attempt>,
+        last: SuResult,
+        fuse: FuseOutcome?,
+        launch: FuseLaunch,
+    ): Result {
+        val diagnosis = classifyMountFailure(attempts, readFilesystems(), fuse)
         return Result(
             ok = false,
-            message = firstLine(last.stderr)
+            message = daemonMessage(diagnosis, launch)
+                ?: firstLine(last.stderr)
                 ?: firstLine(last.stdout.orEmpty())
                 ?: "exit ${last.code}",
-            diagnosis = classifyMountFailure(
-                failures.map { Attempt(it.code, it.stderr) },
-                readFilesystems(),
-            ),
+            diagnosis = diagnosis,
         )
     }
 
-    private fun mountScript(
+    /** The daemon's own first line is what separates a wrong classpath from an
+     *  unreachable server; the root shell wrote it, so unreadable degrades to the code. */
+    private fun daemonMessage(diagnosis: MountDiagnosis, launch: FuseLaunch): String? {
+        if (diagnosis != MountDiagnosis.FUSE_DAEMON_FAILED) return null
+        return runCatching { firstLine(File(launch.logPath).readText()) }.getOrNull()
+    }
+
+    private fun kernelMountScript(
         host: String,
         export: String,
         port: Int,
@@ -103,6 +128,52 @@ object RootMount {
         cat /proc/1/mounts
     """.trimIndent()
 
+    /**
+     * The proven launch chain: the shell owns /dev/fuse, hands the descriptor to
+     * mount(2), and execs [FuseLaunch.apkPath] onto the same descriptor.
+     *
+     * The readiness probe must not touch the mountpoint before the daemon is known to
+     * be serving — a FUSE request with nothing reading the device blocks forever — so
+     * the daemon's own log line is the liveness signal. The log is truncated first so a
+     * stale line cannot be read as success, and a mount whose daemon never answered is
+     * unmounted rather than left wedged.
+     */
+    private fun fuseMountScript(
+        host: String,
+        export: String,
+        port: Int,
+        mountpoint: String,
+        fuse: FuseLaunch,
+    ): String {
+        val mp = quote(mountpoint)
+        val log = quote(fuse.logPath)
+        // Lazy, and only lazy: measured, a plain umount of a fuse mount whose daemon is
+        // not reading the device blocks indefinitely, because the kernel waits for a
+        // FUSE_DESTROY reply nobody will send. An `umount || umount -l` chain never
+        // reaches its fallback, and the whole su call dies on its timeout instead of
+        // reporting why the daemon failed.
+        fun teardown(code: Int) = "{ umount -l $mp 2>/dev/null; exit $code; }"
+        return """
+            : > $log 2>/dev/null
+            chmod 0644 $log 2>/dev/null
+            mkdir -p $mp || exit $FUSE_MKDIR_FAILED
+            exec 3<>/dev/fuse || exit $FUSE_NO_DEVICE
+            mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse $mp || exit $FUSE_MOUNT_REFUSED
+            if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
+            CLASSPATH=${quote(fuse.apkPath)} ${'$'}S app_process --nice-name=app.mammon:fuse / app.mammon.FuseDaemonKt 3 ${quote(host)} ${quote(port.toString())} ${quote(export)} </dev/null >>$log 2>&1 &
+            D=${'$'}!
+            i=0
+            while [ ${'$'}i -lt $FUSE_READY_TICKS ]; do
+                grep -q 'serving ' $log 2>/dev/null && break
+                kill -0 ${'$'}D 2>/dev/null || break
+                i=${'$'}((i+1)); sleep $FUSE_TICK_SECONDS
+            done
+            grep -q 'serving ' $log 2>/dev/null || ${teardown(FUSE_DAEMON_SILENT)}
+            timeout $FUSE_PROBE_SECONDS ls $mp >/dev/null 2>&1 || ${teardown(FUSE_MOUNT_UNRESPONSIVE)}
+            cat /proc/1/mounts
+        """.trimIndent()
+    }
+
     /** World-readable, so the fs-type half of a diagnosis costs no root. */
     private fun readFilesystems(): String =
         runCatching { File("/proc/filesystems").readText() }.getOrDefault("")
@@ -110,12 +181,24 @@ object RootMount {
     internal fun classifyMountFailure(
         attempts: List<Attempt>,
         filesystemsText: String,
+        fuse: FuseOutcome?,
     ): MountDiagnosis = when {
         attempts.any { isRootUnavailable(it.code) } -> MountDiagnosis.NO_ROOT
-        !hasNfsFilesystem(filesystemsText) -> MountDiagnosis.KERNEL_LACKS_NFS
-        attempts.isNotEmpty() && attempts.all { isUnknownFsType(it.stderr) } ->
-            MountDiagnosis.VERSION_MODULE_MISSING
+        fuse == FuseOutcome.NO_DEVICE || (fuse != null && !hasFilesystem(filesystemsText, "fuse")) ->
+            MountDiagnosis.KERNEL_LACKS_FUSE
+        fuse == FuseOutcome.DAEMON_SILENT || fuse == FuseOutcome.MOUNT_UNRESPONSIVE ->
+            MountDiagnosis.FUSE_DAEMON_FAILED
         else -> MountDiagnosis.GENERIC
+    }
+
+    /** Maps a FUSE script exit code to how far it got; null for success. */
+    internal fun fuseOutcomeFor(code: Int): FuseOutcome? = when (code) {
+        0 -> null
+        FUSE_NO_DEVICE -> FuseOutcome.NO_DEVICE
+        FUSE_MOUNT_REFUSED -> FuseOutcome.MOUNT_REFUSED
+        FUSE_DAEMON_SILENT -> FuseOutcome.DAEMON_SILENT
+        FUSE_MOUNT_UNRESPONSIVE -> FuseOutcome.MOUNT_UNRESPONSIVE
+        else -> FuseOutcome.FAILED
     }
 
     /** Root never arrived: su could not be started, or it never answered. Both are
@@ -123,14 +206,13 @@ object RootMount {
     private fun isRootUnavailable(code: Int): Boolean =
         code == SU_NOT_EXECUTABLE_CODE || code == SU_TIMED_OUT_CODE
 
-    private fun isUnknownFsType(stderr: String): Boolean =
-        stderr.contains("no such device", true) ||
-            stderr.contains("unknown filesystem type", true)
+    /** Compares the fs-type column of /proc/filesystems whole, so "fuseblk" is not
+     *  "fuse" and "nfsd" is not "nfs". */
+    internal fun hasFilesystem(filesystemsText: String, type: String): Boolean =
+        filesystemsText.lineSequence().any { it.substringAfterLast('\t').trim() == type }
 
-    /** Compares the fs-type column of /proc/filesystems whole, so "nfsd" is not "nfs". */
-    private fun hasNfsFilesystem(filesystemsText: String): Boolean =
-        filesystemsText.lineSequence().any { it.substringAfterLast('\t').trim() in NFS_FS_TYPES }
-
+    /** Serves both backings: a plain umount makes the kernel send FUSE_DESTROY, which
+     *  is how the daemon learns to exit. */
     fun unmount(mountpoint: String): Result {
         val script = "umount ${quote(mountpoint)} && cat /proc/1/mounts"
         val r = runSu(script)
@@ -151,7 +233,7 @@ object RootMount {
         return copy(
             stateAfter = when {
                 text.isBlank() -> State.UNKNOWN
-                type != null -> State.MOUNTED_NFS
+                type != null -> State.MOUNTED
                 else -> State.NOT_MOUNTED
             },
             fsType = type,
@@ -230,8 +312,11 @@ object RootMount {
         SuResult(130, null, "interrupted")
     }
 
-    /** A pending su authorization dialog must not hold the UI hostage forever. */
-    private const val SU_TIMEOUT_SECONDS = 15L
+    /** Must outlast the FUSE script's own bounded wait — [FUSE_READY_TICKS] ticks of
+     *  [FUSE_TICK_SECONDS] plus a [FUSE_PROBE_SECONDS] probe, ~11 s — or the happy path
+     *  is killed; the rest is headroom for a pending su authorization dialog, which
+     *  must not hold the mount thread forever either. */
+    private const val SU_TIMEOUT_SECONDS = 30L
 
     /** Conventionally "timeout"; surfaced verbatim so callers can classify it. */
     private const val SU_TIMED_OUT_CODE = 124
@@ -244,7 +329,24 @@ object RootMount {
      *  needs rpcbind and mountd, so the narrower requirement is tried first. */
     internal val MOUNT_VERSIONS = listOf("4.2", "3")
 
-    private val NFS_FS_TYPES = setOf("nfs", "nfs4")
+    /** Backings a mammon mount can have. Deliberately not shared with [hasFilesystem]:
+     *  a kernel with fuse but no nfs must not read as nfs-capable. */
+    private val MOUNTED_FS_TYPES = setOf("nfs", "nfs4", "fuse")
+
+    /** How far the FUSE script got. [FUSE_MKDIR_FAILED] has no [FuseOutcome] of its own
+     *  because it says nothing about FUSE. */
+    private const val FUSE_MKDIR_FAILED = 71
+    private const val FUSE_NO_DEVICE = 73
+    private const val FUSE_MOUNT_REFUSED = 74
+    private const val FUSE_DAEMON_SILENT = 75
+    private const val FUSE_MOUNT_UNRESPONSIVE = 76
+
+    private const val FUSE_READY_TICKS = 60
+    private const val FUSE_TICK_SECONDS = "0.1"
+
+    /** The first mountpoint touch after the daemon reports serving; bounded because a
+     *  daemon that logged and then died would otherwise block the shell forever. */
+    private const val FUSE_PROBE_SECONDS = 5
 
     /** Outside the 0-255 wait-status range, so a shell inside the mount script can
      *  never forge it: only [exec] failing to start su produces this. */

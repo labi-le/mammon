@@ -1,7 +1,6 @@
 package app.mammon
 
 import java.io.IOException
-import java.io.InputStream
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.util.UUID
@@ -140,7 +139,7 @@ class NfsV4Access(private val spec: ExportSpec) : NfsSession {
         return children.directoriesFirst()
     }
 
-    override fun streamFor(docId: String): InputStream {
+    override fun openFile(docId: String): NfsFile {
         val path = requireNotNull(PathCodec.pathFor(docId))
         val res = try {
             compoundAt(path, "open") {
@@ -152,7 +151,7 @@ class NfsV4Access(private val spec: ExportSpec) : NfsSession {
         }
         val attrs = Fattr4Codec.decode(lastOf(res, nfs_opnum4.OP_GETATTR).opgetattr.resok4.obj_attributes)
         if (attrs == null || !attrs.isRegular) throw IOException("not a regular file")
-        return ReadStream(lastOf(res, nfs_opnum4.OP_GETFH).opgetfh.resok4.`object`)
+        return Handle(lastOf(res, nfs_opnum4.OP_GETFH).opgetfh.resok4.`object`)
     }
 
     override fun close() {
@@ -331,27 +330,23 @@ class NfsV4Access(private val spec: ExportSpec) : NfsSession {
         return fresh
     }
 
-    private inner class ReadStream(private val fh: nfs_fh4) : InputStream() {
-        private var offset = 0L
-        private var eof = false
-        private val single = ByteArray(1)
+    /**
+     * PUTFH + READ in one COMPOUND, so a read costs one round trip and needs no OPEN
+     * state; the anonymous stateid is what makes the handle usable from any thread.
+     */
+    private inner class Handle(private val fh: nfs_fh4) : NfsFile {
 
-        override fun read(): Int = if (read(single, 0, 1) < 0) -1 else single[0].toInt() and 0xff
-
-        override fun read(b: ByteArray, off: Int, len: Int): Int {
+        override fun readAt(offset: Long, dst: ByteArray, off: Int, len: Int): Int {
             if (len == 0) return 0
-            if (eof) return -1
             val want = minOf(len, session.maxRead)
             val res = resilient { inSession(compound("read") { withPutfh(fh); withRead(want, offset, ANONYMOUS) }) }
             val ok = lastOf(res, nfs_opnum4.OP_READ).opread.resok4
             val n = ok.data.remaining()
-            if (n > 0) {
-                ok.data.get(b, off, n)
-                offset += n
-            }
-            if (ok.eof) eof = true
-            return if (n == 0) -1 else n
+            if (n > 0) ok.data.get(dst, off, n)
+            return n
         }
+
+        override fun close() = Unit
     }
 
     private companion object {

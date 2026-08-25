@@ -4,7 +4,6 @@ import com.emc.ecs.nfsclient.nfs.NfsDirectoryPlusEntry
 import com.emc.ecs.nfsclient.nfs.NfsGetAttributes
 import com.emc.ecs.nfsclient.nfs.NfsType
 import com.emc.ecs.nfsclient.nfs.io.Nfs3File
-import com.emc.ecs.nfsclient.nfs.io.NfsFileInputStream
 import com.emc.ecs.nfsclient.nfs.nfs3.Nfs3
 import com.emc.ecs.nfsclient.network.NetMgr
 import com.emc.ecs.nfsclient.rpc.CredentialUnix
@@ -66,17 +65,28 @@ class NfsAccess(private val spec: ExportSpec) : NfsSession {
         return children.directoriesFirst()
     }
 
-    override fun streamFor(docId: String): java.io.InputStream {
+    override fun openFile(docId: String): NfsFile {
         val f = fileFor(requireNotNull(PathCodec.pathFor(docId)))
         if (!f.exists()) throw IOException("no such file")
         if (!f.isFile) throw IOException("not a regular file")
-        return NfsFileInputStream(f, NFS_READ_CHUNK)
+        return Handle(f)
     }
 
-    private fun fileFor(absolutePath: String): Nfs3File {
-        val rel = absolutePath.removePrefix("/")
-        return if (rel.isEmpty()) nfs.newFile("/") else nfs.newFile(rel)
+    /** One READ per call against a resolved handle; the server caps [len] at its rtmax. */
+    private class Handle(private val file: Nfs3File) : NfsFile {
+
+        override fun readAt(offset: Long, dst: ByteArray, off: Int, len: Int): Int =
+            file.read(offset, minOf(len, NFS_READ_CHUNK), dst, off).bytesRead.coerceAtLeast(0)
+
+        override fun close() = Unit
     }
+
+    /**
+     * The path must stay export-absolute: [Nfs3File] builds its parent chain by
+     * trimming the last separator, and a relative path never reaches a root, so the
+     * constructor recurses until the stack is gone.
+     */
+    private fun fileFor(absolutePath: String): Nfs3File = nfs.newFile(absolutePath)
 
     override fun close() {
         // NetMgr keys its maps with createUnresolved addresses; a resolved one would

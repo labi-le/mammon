@@ -14,3 +14,8 @@
 # moves the search to the obfuscated package and the load fails with an NPE the
 # first time oncrpc4j builds a transport.
 -keepnames class org.glassfish.grizzly.Grizzly
+
+# The FUSE daemon's entry point is named on an app_process command line built by
+# RootMount, so nothing in the dex references it and R8 would shrink it away; keeping
+# only main() lets everything it reaches stay renameable.
+-keep class app.mammon.FuseDaemonKt { public static void main(java.lang.String[]); }

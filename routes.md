@@ -23,15 +23,18 @@ Config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35.
 
 Unit tests (`app/src/test/kotlin/app/mammon/`, JUnit4, no Robolectric): `PathCodecTest`,
 `ExportSpecTest`, `MountsParserTest`, `RootMountNamespaceTest`, `NfsListFilterTest`,
-`NfsListNullAttrsFallbackTest`.
+`NfsListNullAttrsFallbackTest`, `ManifestGuardTest`.
 
 No services or receivers exist yet.
 
 - Permission: `android.permission.INTERNET` (only).
 - `application`: `allowBackup=false`, theme `Theme.Mammon`.
 - One exported activity `MainActivity` with the `MAIN`/`LAUNCHER` intent filter.
-- One exported DocumentsProvider `app.mammon.nfs` (`NfsDocumentsProvider`),
-  `grantUriPermissions=true`, `DOCUMENTS_PROVIDER` intent filter.
+- One exported DocumentsProvider `app.mammon.nfs` (`NfsDocumentsProvider`) guarded by
+  `android:permission="android.permission.MANAGE_DOCUMENTS"` (the AOSP contract —
+  `DocumentsProvider.attachInfo` refuses unprotected authorities), `grantUriPermissions=true`,
+  `DOCUMENTS_PROVIDER` intent filter; SAF clients reach it through DocumentsUI, which holds
+  that signature permission.
 - No foreground service, no boot receiver.
 
 ### Resources (`app/src/main/res/`)

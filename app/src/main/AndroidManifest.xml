@@ -22,6 +22,7 @@
         <provider
             android:name=".NfsDocumentsProvider"
             android:authorities="app.mammon.nfs"
+            android:permission="android.permission.MANAGE_DOCUMENTS"
             android:exported="true"
             android:grantUriPermissions="true">
             <intent-filter>

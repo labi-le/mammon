@@ -1,7 +1,7 @@
 # shellcheck shell=sh
 SKIPUNZIP=0
 
-ui_print "- Mammon FS Loader v1.0"
+ui_print "- Mammon FS Loader v1.1"
 
 # Flash-time verdict: the same scan+load the boot scripts run later, so a
 # missing-candidate or refused-insmod situation is visible before first reboot.

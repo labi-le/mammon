@@ -69,6 +69,12 @@ the definitive oracle for "does this device ship the support as files": it
 lists exactly what was found, what loaded or was refused, and what
 `/proc/filesystems` registered afterwards.
 
+Since v1.1 the module can also automount the saved share at boot (off by
+default behind a flag file): it borrows clifforama/multi-mount's pattern —
+config-driven boot mounts with a bounded network wait — but rides the app's
+FUSE daemon instead of kernel nfs, so it works on kernels where nfs does not
+exist and fuse does.
+
 Since v0.6.0 the app carries this module inside its own APK: `packModuleZip` in
 `app/build.gradle.kts` packs the directory deterministically into an asset, and an
 Install-module button stages it and hands it to a system chooser for Magisk to flash —

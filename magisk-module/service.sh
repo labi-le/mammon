@@ -4,3 +4,4 @@ MODDIR=${0%/*}
 if [ -z "$(mammon_registered)" ]; then
     mammon_fsloader_main "$MODDIR/load.log"
 fi
+mammon_automount_main "$MODDIR/load.log"

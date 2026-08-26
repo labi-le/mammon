@@ -20,8 +20,8 @@ android {
         applicationId = "app.mammon"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.6.3"
+        versionCode = 15
+        versionName = "0.6.4"
     }
 
     // Local releases sign when keystore.properties exists; absent file keeps them unsigned (CI parity).
@@ -81,6 +81,7 @@ val packModuleZip = tasks.register<Zip>("packModuleZip") {
 tasks.withType<Test>().configureEach {
     dependsOn(packModuleZip)
     systemProperty("mammon.moduleZip", packModuleZip.flatMap { it.archiveFile }.get().asFile.absolutePath)
+    systemProperty("mammon.fslib", rootProject.file("magisk-module/fslib.sh").absolutePath)
 }
 
 abstract class ModuleAssetDirTask : DefaultTask() {

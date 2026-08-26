@@ -327,7 +327,8 @@ class RootMountDiagnosisTest {
         )
 
         // The refused exit dumps before exiting; the silent/unresponsive teardowns
-        // reuse mammon_dump inside teardown(); the success tail is a bare call.
+        // reuse mammon_dump inside teardown(); the success tail is a bare call whose
+        // group redirection closes after it.
         assertTrue(
             "refused exit must dump",
             "|| { mammon_dump; exit 74; }" in script,
@@ -336,7 +337,10 @@ class RootMountDiagnosisTest {
             "teardown dumps too",
             "umount -l '/mnt/nas' 2>/dev/null; mammon_dump; exit" in script,
         )
-        assertTrue("success tail dumps", script.trimEnd().endsWith("mammon_dump"))
+        assertTrue(
+            "success tail dumps",
+            script.trimEnd().endsWith("mammon_dump\n} 3<>/dev/fuse"),
+        )
         assertTrue(
             "dump defined before first use",
             script.indexOf("mammon_dump() {") < script.indexOf("exec 3<>/dev/fuse"),

@@ -160,8 +160,15 @@ object RootMount {
         runSu("ls /vendor/lib/modules /system/lib/modules 2>/dev/null | grep -i -E 'nfs|fuse' || true").stdout.orEmpty()
 
     /**
-     * The proven launch chain: the shell owns /dev/fuse, hands the descriptor to
-     * mount(2), and execs [FuseLaunch.apkPath] onto the same descriptor.
+     * The launch chain: the shell opens /dev/fuse, hands the descriptor to mount(2),
+     * and execs [FuseLaunch.apkPath] onto the same descriptor. The descriptor rides a
+     * group redirection because Android's /system/bin/sh (mksh) sets close-on-exec on
+     * fds >= 3 opened by `exec` redirection, which would make mount(2) fail EINVAL.
+     *
+     * Not proven end to end on a real device: the daemon and NfsSession seam are proven
+     * on a Linux host, but the rooted-phone chain (su, the kernel FUSE mount, the
+     * descriptor surviving exec) is unverified — see docs/guides/architecture.md
+     * "Verification status".
      *
      * The readiness probe must not touch the mountpoint before the daemon is known to
      * be serving — a FUSE request with nothing reading the device blocks forever — so
@@ -194,8 +201,14 @@ object RootMount {
             }
             mkdir -p $mp || { mammon_dump; exit $FUSE_MKDIR_FAILED; }
             ${preloadLine("fuse")}
-            # NO_DEVICE is observed here directly, so it needs no /proc dump.
-            exec 3<>/dev/fuse || exit $FUSE_NO_DEVICE
+            # The fd must ride a GROUP redirection, not `exec 3<>`: Android's
+            # /system/bin/sh is mksh, and mksh marks `exec`-opened fds >= 3
+            # close-on-exec, so the mount child would lose the device and mount(2)
+            # fails EINVAL. A failed group redirection would kill the shell before its
+            # body, so openability is probed in a throwaway subshell first and still
+            # classified as NO_DEVICE. fslib.sh's automount carries the same pattern.
+            (exec 3<>/dev/fuse) 2>/dev/null || exit $FUSE_NO_DEVICE
+            {
             mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse $mp || { mammon_dump; exit $FUSE_MOUNT_REFUSED; }
             if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
             CLASSPATH=${quote(fuse.apkPath)} ${'$'}S app_process --nice-name=app.mammon:fuse / app.mammon.FuseDaemonKt 3 ${quote(host)} ${quote(port.toString())} ${quote(export)} </dev/null >>$log 2>&1 &
@@ -209,6 +222,7 @@ object RootMount {
             grep -q 'serving ' $log 2>/dev/null || ${teardown(FUSE_DAEMON_SILENT)}
             timeout $FUSE_PROBE_SECONDS ls $mp >/dev/null 2>&1 || ${teardown(FUSE_MOUNT_UNRESPONSIVE)}
             mammon_dump
+            } 3<>/dev/fuse
         """.trimIndent()
     }
 

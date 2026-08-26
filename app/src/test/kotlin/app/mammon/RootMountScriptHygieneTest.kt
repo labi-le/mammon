@@ -2,6 +2,8 @@ package app.mammon
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import java.util.concurrent.CompletableFuture
@@ -45,6 +47,56 @@ class RootMountScriptHygieneTest {
             assertEquals("$name is not valid shell:\n$out", 0, proc.exitValue())
         }
     }
+
+    /**
+     * Android's /system/bin/sh is mksh, and mksh sets close-on-exec on fds >= 3 opened
+     * by `exec` redirection — so a `exec 3<>/dev/fuse` form hands the mount child a
+     * closed descriptor and mount(2) fails EINVAL. Only the real target shell shows it:
+     * dash and bash keep such fds open, which is why the rest of this suite's dash runs
+     * cannot model the failure. The stubbed mount records whether /proc/self/fd/3 still
+     * resolves after the exec; the fd must survive, or the FUSE launch chain is broken.
+     */
+    @Test fun `fuseMountScript keeps fd 3 open across exec under mksh`() {
+        val mksh = findOnPath("mksh")
+        assumeTrue("mksh required (nix-shell -p mksh); skipped", mksh != null)
+
+        val record = File(tempDir("record"), "mount_record").apply { writeText("") }
+        val script = generated().first { it.first == "fuseMountScript" }.second
+        val file = File(tempDir("script"), "script.sh").apply { writeText(script) }
+
+        val path = tempDir("path")
+        File(path, "mount").apply {
+            writeText(
+                """
+                #!/bin/sh
+                if [ -e /proc/self/fd/3 ]; then echo FD_OK; else echo FD_MISSING; fi >> '${record.path}'
+                echo "MOUNT ${'$'}@" >> '${record.path}'
+                exit 0
+                """.trimIndent(),
+            )
+            setExecutable(true)
+        }
+        for (name in STUBBED_COMMANDS) {
+            if (name == "mount") continue
+            File(path, name).apply { writeText("#!/bin/sh\nexit 0\n"); setExecutable(true) }
+        }
+
+        val builder = ProcessBuilder(mksh, file.path)
+        builder.environment()["PATH"] = path.path + ":" + (System.getenv("PATH").orEmpty())
+        val proc = builder.start()
+        val out = proc.inputStream.bufferedReader().use { it.readText() }
+        proc.waitFor(SHELL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        val recordText = record.readText()
+        assertTrue(
+            "mount stub saw fd 3 closed (mksh cloexec on exec-redirection fds >= 3):\n" +
+                "record:\n$recordText\nstdout:\n$out",
+            recordText.contains("FD_OK"),
+        )
+    }
+
+    private fun findOnPath(name: String): String? =
+        (System.getenv("PATH").orEmpty().split(':').firstOrNull { File(it, name).canExecute() })
+            ?.let { File(it, name).absolutePath }
 
     private fun generated(): List<Pair<String, String>> {
         val mountpoint = tempDir("mp").path

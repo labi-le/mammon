@@ -21,6 +21,8 @@ pkgs.mkShell {
     jdk17
     git
     androidSdk
+    # The mount-script cloexec seam test runs under mksh, Android's /system/bin/sh.
+    mksh
   ];
 
   ANDROID_HOME = sdkRoot;

@@ -238,37 +238,41 @@ mammon_automount_main() {
         return 0
     fi
     fuse_dev=${MAMMON_FUSE_DEVICE:-/dev/fuse}
-    # A failed `exec` redirection EXITS the shell, killing service.sh outright,
-    # so openability is probed in a throwaway subshell first.
+    # The fd must ride a GROUP redirection, not `exec 3<>`: Magisk's /system/bin/sh is
+    # mksh, which marks `exec`-opened fds >= 3 close-on-exec, so the mount child would
+    # lose the device and mount(2) fails EINVAL. A failed group redirection would kill
+    # the shell before its body, so openability is probed in a throwaway subshell first.
+    # Same shape as RootMount.kt's fuseMountScript.
     if ! (exec 3<>"$fuse_dev") 2>/dev/null; then
         mammon_log "$log" "FAILED: cannot open $fuse_dev"
         return 0
     fi
-    exec 3<>"$fuse_dev"
-    mkdir -p "$mp"
-    mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse "$mp" || {
-        mammon_log "$log" "FAILED: kernel refused the fuse mount at $mp"
-        return 0
-    }
-    if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
-    # load.log appends across boots, so readiness reads only what THIS launch
-    # writes past the mark — a stale 'serving' line from an earlier boot would
-    # otherwise bless a daemon that died instantly.
-    mark=$(wc -c <"$log")
-    CLASSPATH=$apk $S app_process --nice-name=app.mammon:fuse / app.mammon.FuseDaemonKt 3 "$host" "$port" "$export_path" </dev/null >>"$log" 2>&1 &
-    D=$!
-    mammon_log "$log" "automount: daemon pid $D, probing readiness"
-    k=0
-    while [ "$k" -lt 30 ]; do
-        tail -c +"$((mark + 1))" "$log" 2>/dev/null | grep -q 'serving ' && break
-        kill -0 "$D" 2>/dev/null || break
-        k=$((k + 1))
-        sleep 1
-    done
-    if tail -c +"$((mark + 1))" "$log" 2>/dev/null | grep -q 'serving '; then
-        mammon_log "$log" "MOUNTED: $host:$port$export_path at $mp via fuse (pid $D)"
-    else
-        umount -l "$mp" 2>/dev/null
-        mammon_log "$log" "FAILED: daemon died or never served; unmounted $mp"
-    fi
+    {
+        mkdir -p "$mp"
+        mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse "$mp" || {
+            mammon_log "$log" "FAILED: kernel refused the fuse mount at $mp"
+            return 0
+        }
+        if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
+        # load.log appends across boots, so readiness reads only what THIS launch
+        # writes past the mark — a stale 'serving' line from an earlier boot would
+        # otherwise bless a daemon that died instantly.
+        mark=$(wc -c <"$log")
+        CLASSPATH=$apk $S app_process --nice-name=app.mammon:fuse / app.mammon.FuseDaemonKt 3 "$host" "$port" "$export_path" </dev/null >>"$log" 2>&1 &
+        D=$!
+        mammon_log "$log" "automount: daemon pid $D, probing readiness"
+        k=0
+        while [ "$k" -lt 30 ]; do
+            tail -c +"$((mark + 1))" "$log" 2>/dev/null | grep -q 'serving ' && break
+            kill -0 "$D" 2>/dev/null || break
+            k=$((k + 1))
+            sleep 1
+        done
+        if tail -c +"$((mark + 1))" "$log" 2>/dev/null | grep -q 'serving '; then
+            mammon_log "$log" "MOUNTED: $host:$port$export_path at $mp via fuse (pid $D)"
+        else
+            umount -l "$mp" 2>/dev/null
+            mammon_log "$log" "FAILED: daemon died or never served; unmounted $mp"
+        fi
+    } 3<>"$fuse_dev"
 }

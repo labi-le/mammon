@@ -7,7 +7,7 @@ Every step is recorded in `load.log`.
 
 ## Install
 
-1. Copy `mammon-fsloader-v1.1.zip` to the phone.
+1. Copy `mammon-fsloader-v1.2.zip` to the phone.
 2. Magisk app -> Modules -> Install from storage -> pick the zip.
 3. Reboot. During the flash itself the install console already shows whether
    any candidate modules were found and loaded (the app flash also writes this
@@ -33,7 +33,7 @@ Each run appends one timestamped block headed by the running kernel release:
 button in the Magisk app; `service.sh` re-runs it once at late_start only if
 nothing had registered by then.
 
-## Automount at boot (v1.1)
+## Automount at boot (v1.2)
 
 The module can mount your share automatically at every boot. It is off by
 default; to switch it on:

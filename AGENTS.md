@@ -58,7 +58,7 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 Out of scope so far: provider-side writes/rename/delete, any write through FUSE,
 Kerberos/RPCSEC_GSS, pNFS layouts, NFSv4 delegations and byte-range locks, foreground
 services, boot receivers, caching layers. Boot-time automount of the saved share is
-owned by the companion module (v1.1, off by default behind a flag file), not the app.
+owned by the companion module (v1.2, off by default behind a flag file), not the app.
 
 ## Verification expectations
 

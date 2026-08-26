@@ -69,7 +69,7 @@ the definitive oracle for "does this device ship the support as files": it
 lists exactly what was found, what loaded or was refused, and what
 `/proc/filesystems` registered afterwards.
 
-Since v1.1 the module can also automount the saved share at boot (off by
+Since v1.2 the module can also automount the saved share at boot (off by
 default behind a flag file): it borrows clifforama/multi-mount's pattern —
 config-driven boot mounts with a bounded network wait — but rides the app's
 FUSE daemon instead of kernel nfs, so it works on kernels where nfs does not
@@ -81,7 +81,7 @@ Install-module button stages it and hands it to a system chooser for Magisk to f
 mammon deliberately stops at that hand-off, because only Magisk completing its own flow
 proves an install. Its probe compares versionCodes rather than testing for a directory:
 v0.6.2 mapped "the module directory exists" to "already installed", which left a device
-carrying v1.0 unable to reach v1.1 through the UI at all. Both numbers are read where
+carrying v1.0 unable to reach v1.2 through the UI at all. Both numbers are read where
 they live — `module.prop` inside the packaged asset zip for the bundled one, `module.prop`
 under `modules_update/` or `modules/` for the installed one, the staged copy winning
 because that is what the next boot runs — so no second copy of a version number exists to

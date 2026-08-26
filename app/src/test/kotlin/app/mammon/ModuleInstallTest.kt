@@ -16,30 +16,30 @@ class ModuleInstallTest {
     @Test
     fun anInstallAtOrPastTheBundledVersionIsPresent() {
         assertEquals(
-            ModuleInstall.Verdict(ModuleInstall.Probe.PRESENT, 2, 2),
-            ModuleInstall.classify(0, "absent\n2\n", 2),
+            ModuleInstall.Verdict(ModuleInstall.Probe.PRESENT, 3, 3),
+            ModuleInstall.classify(0, "absent\n3\n", 3),
         )
         assertEquals(
-            ModuleInstall.Verdict(ModuleInstall.Probe.PRESENT, 7, 2),
-            ModuleInstall.classify(0, "absent\n7\n", 2),
+            ModuleInstall.Verdict(ModuleInstall.Probe.PRESENT, 7, 3),
+            ModuleInstall.classify(0, "absent\n7\n", 3),
         )
     }
 
     @Test
     fun anOlderInstallIsOutdatedAndNamesBothVersions() {
         // The v1.0 field case: the module is there, so PRESENT would dead-end the button
-        // forever and the automount feature of the bundled v1.1 could never arrive.
-        val verdict = ModuleInstall.classify(0, "absent\n1\n", 2)
+        // forever and the automount feature of the bundled v1.2 could never arrive.
+        val verdict = ModuleInstall.classify(0, "absent\n1\n", 3)
         assertEquals(ModuleInstall.Probe.OUTDATED, verdict.probe)
         assertEquals(1, verdict.installedVersionCode)
-        assertEquals(2, verdict.bundledVersionCode)
+        assertEquals(3, verdict.bundledVersionCode)
     }
 
     @Test
     fun neitherDirectoryPresentIsAbsent() {
         assertEquals(
             ModuleInstall.Verdict(ModuleInstall.Probe.ABSENT),
-            ModuleInstall.classify(0, "absent\nabsent\n", 2),
+            ModuleInstall.classify(0, "absent\nabsent\n", 3),
         )
     }
 
@@ -48,13 +48,13 @@ class ModuleInstallTest {
         // KernelSU and Magisk unpack an update into modules_update and swap it in at the
         // next reboot: a pending newer copy is installed-newer, not outdated.
         assertEquals(
-            ModuleInstall.Verdict(ModuleInstall.Probe.PRESENT, 2, 2),
-            ModuleInstall.classify(0, "2\n1\n", 2),
+            ModuleInstall.Verdict(ModuleInstall.Probe.PRESENT, 3, 3),
+            ModuleInstall.classify(0, "3\n1\n", 3),
         )
         // And a staged OLDER copy is what the reboot will run, so it decides too.
         assertEquals(
-            ModuleInstall.Verdict(ModuleInstall.Probe.OUTDATED, 1, 2),
-            ModuleInstall.classify(0, "1\n5\n", 2),
+            ModuleInstall.Verdict(ModuleInstall.Probe.OUTDATED, 1, 3),
+            ModuleInstall.classify(0, "1\n5\n", 3),
         )
     }
 
@@ -64,29 +64,29 @@ class ModuleInstallTest {
         // A denied or timed-out probe knows nothing about the device; reading it as
         // absent would push the user into reinstalling a module that is already there,
         // and reading it as present would hide an available update.
-        assertEquals(unavailable, ModuleInstall.classify(1, null, 2))
-        assertEquals(unavailable, ModuleInstall.classify(124, null, 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, null, 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "", 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent", 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent\nabsent\nabsent", 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n\n2", 2))
+        assertEquals(unavailable, ModuleInstall.classify(1, null, 3))
+        assertEquals(unavailable, ModuleInstall.classify(124, null, 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, null, 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "", 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent", 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent\nabsent\nabsent", 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n\n2", 3))
         // module.prop present but carrying no versionCode line, or a directory with no
         // module.prop at all: installed, version unknown, so nothing to compare.
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent\nunknown\n", 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "unknown\nabsent\n", 2))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent\nunknown\n", 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "unknown\nabsent\n", 3))
         // Non-numeric, out-of-int-range and negative versionCodes order nothing.
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent\nv1.1\n", 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n2beta\n", 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n99999999999\n", 2))
-        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n-3\n", 2))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent\nv1.1\n", 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n2beta\n", 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n99999999999\n", 3))
+        assertEquals(unavailable, ModuleInstall.classify(0, "absent\n-3\n", 3))
     }
 
     @Test
     fun surroundingWhitespaceAndCrlfDoNotChangeTheVerdict() {
         assertEquals(
-            ModuleInstall.Verdict(ModuleInstall.Probe.OUTDATED, 1, 2),
-            ModuleInstall.classify(0, "absent\r\n 1 \r\n", 2),
+            ModuleInstall.Verdict(ModuleInstall.Probe.OUTDATED, 1, 3),
+            ModuleInstall.classify(0, "absent\r\n 1 \r\n", 3),
         )
         assertEquals(
             ModuleInstall.Verdict(ModuleInstall.Probe.ABSENT),
@@ -96,8 +96,8 @@ class ModuleInstallTest {
 
     @Test
     fun bundledVersionComesFromThePackagedZip() {
-        val zip = zipFixture("module.prop" to "id=mammon_fsloader\nversionCode=2\nversion=v1.1\n")
-        assertEquals(2, ModuleInstall.bundledVersionCode(zip.inputStream()))
+        val zip = zipFixture("module.prop" to "id=mammon_fsloader\nversionCode=3\nversion=v1.2\n")
+        assertEquals(3, ModuleInstall.bundledVersionCode(zip.inputStream()))
     }
 
     @Test
@@ -167,8 +167,8 @@ class ModuleInstallTest {
         writeProp(root, "modules", "versionCode=1\r\nversionCode=9\r\n")
         assertEquals("absent\n1\r", runProbe(root))
 
-        writeProp(root, "modules_update", "versionCode=2\n")
-        assertEquals("2\n1\r", runProbe(root))
+        writeProp(root, "modules_update", "versionCode=3\n")
+        assertEquals("3\n1\r", runProbe(root))
 
         // A line that merely contains the key is not the key.
         writeProp(root, "modules_update", "#versionCode=7\nversionCode=3\n")
@@ -180,8 +180,8 @@ class ModuleInstallTest {
         val root = tempDir()
         writeProp(root, "modules", "id=x\nversionCode=1\nversion=v1.0\n")
         assertEquals(
-            ModuleInstall.Verdict(ModuleInstall.Probe.OUTDATED, 1, 2),
-            ModuleInstall.classify(0, runProbe(root) + "\n", 2),
+            ModuleInstall.Verdict(ModuleInstall.Probe.OUTDATED, 1, 3),
+            ModuleInstall.classify(0, runProbe(root) + "\n", 3),
         )
     }
 

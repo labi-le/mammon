@@ -104,7 +104,7 @@ mammon_fsloader_main() {
     fi
 }
 
-# ---- boot-time automount (v1.1) ----
+# ---- boot-time automount (v1.2) ----
 #
 # Borrows clifforama/multi-mount's UX (config-driven boot mounts with network
 # wait) but backs it with mammon's FUSE daemon instead of kernel nfs, which the

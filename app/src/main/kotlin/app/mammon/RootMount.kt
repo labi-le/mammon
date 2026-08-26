@@ -59,21 +59,30 @@ object RootMount {
 
     /** Overload so callers that just ran a script can classify from the captured
      *  /proc/1/mounts text instead of spawning another su. */
-    fun mountedState(mountpoint: String, mountsText: String): State {
-        if (mountsText.isBlank()) return State.UNKNOWN
-        return if (mountedFsType(mountpoint, mountsText) != null) {
-            State.MOUNTED
-        } else {
-            State.NOT_MOUNTED
-        }
-    }
+    fun mountedState(mountpoint: String, mountsText: String): State =
+        mountSnapshot(mountpoint, mountsText).state
 
-    /** The fs type the kernel actually registered, so the UI names the backing it got
-     *  instead of assuming the rung we tried first. */
-    private fun mountedFsType(mountpoint: String, mountsText: String): String? =
-        MountsParser.parse(mountsText)
-            .find { it.mountPoint == mountpoint && it.fsType in MOUNTED_FS_TYPES }
-            ?.fsType
+    private data class MountSnapshot(
+        val state: State,
+        val fsType: String?,
+        val hasExactEntry: Boolean,
+    )
+
+    /** The exact mountpoint entry drives unmount verdicts; only mammon's own fs types
+     *  fill [fsType], so the UI names backings it actually created. */
+    private fun mountSnapshot(mountpoint: String, mountsText: String?): MountSnapshot {
+        val text = mountsText.orEmpty()
+        if (text.isBlank()) return MountSnapshot(State.UNKNOWN, null, false)
+        var hasExactEntry = false
+        for (entry in MountsParser.parse(text)) {
+            if (entry.mountPoint != mountpoint) continue
+            hasExactEntry = true
+            if (entry.fsType in MOUNTED_FS_TYPES) {
+                return MountSnapshot(State.MOUNTED, entry.fsType, true)
+            }
+        }
+        return MountSnapshot(State.NOT_MOUNTED, null, hasExactEntry)
+    }
 
     /** Kept for tests and diagnostics; unprivileged view, NOT namespace-consistent. */
     fun readOwnNamespaceMounts(): List<MountEntry> =
@@ -298,44 +307,40 @@ object RootMount {
 
     /** Serves both backings: a plain umount makes the kernel send FUSE_DESTROY, which
      *  is how the daemon learns to exit. */
-    fun unmount(mountpoint: String): Result {
-        val script = "umount ${quote(mountpoint)} && cat /proc/1/mounts"
-        val r = runSu(script)
+    fun unmount(mountpoint: String): Result =
+        classifyUnmountResult(mountpoint, runSu(unmountScript(mountpoint)))
+
+    internal fun classifyUnmountResult(mountpoint: String, result: SuResult): Result {
+        val snapshot = mountSnapshot(mountpoint, mountsFromRoot(result.stdout))
+        if (result.code == 0) {
+            return Result(true, "unmounted $mountpoint").withState(snapshot)
+        }
         return when {
-            r.code == 0 -> Result(true, "unmounted $mountpoint").withState(mountpoint, r.stdout)
-            isUnknownSuFlag(r.stderr) -> {
-                val (c2, out2, e2) = runSuViaNsenter(script)
-                if (c2 == 0) Result(true, "unmounted $mountpoint").withState(mountpoint, out2)
-                else classifyUmountError(c2, e2)
-            }
-            else -> classifyUmountError(r.code, r.stderr, r.stdout)
+            snapshot.hasExactEntry -> classifyUmountError(result.code, result.stderr).withState(snapshot)
+            snapshot.state == State.NOT_MOUNTED -> Result(true, "not mounted").withState(snapshot)
+            else -> classifyUmountError(result.code, result.stderr)
         }
     }
 
-    private fun Result.withState(mountpoint: String, mountsText: String?): Result {
-        val text = mountsText.orEmpty()
-        val type = mountedFsType(mountpoint, text)
-        return copy(
-            stateAfter = when {
-                text.isBlank() -> State.UNKNOWN
-                type != null -> State.MOUNTED
-                else -> State.NOT_MOUNTED
-            },
-            fsType = type,
-        )
-    }
+    internal fun unmountScript(mountpoint: String): String = """
+        umount ${quote(mountpoint)}
+        S=${'$'}?
+        cat /proc/1/mounts
+        exit ${'$'}S
+    """.trimIndent()
 
-    private fun classifyUmountError(code: Int, err: String?, out: String? = null): Result {
+    private fun Result.withState(mountpoint: String, mountsText: String?): Result =
+        withState(mountSnapshot(mountpoint, mountsText))
+
+    private fun Result.withState(snapshot: MountSnapshot): Result =
+        copy(stateAfter = snapshot.state, fsType = snapshot.fsType)
+
+    private fun classifyUmountError(code: Int, err: String?): Result {
         val e = err.orEmpty()
         return when {
-            e.contains("not mounted", true) || e.contains("EINVAL", true) ->
-                Result(true, "not mounted")
             e.contains("busy", true) || e.contains("EBUSY", true) ->
                 Result(false, "target is busy — close apps using it first")
-            else -> Result(
-                false,
-                "umount failed: ${firstLine(e) ?: firstLine(out.orEmpty()) ?: "exit $code"}",
-            )
+            else -> Result(false, "umount failed: ${firstLine(e) ?: "exit $code"}")
         }
     }
 
@@ -356,8 +361,6 @@ object RootMount {
         return r
     }
 
-    private fun runSuViaNsenter(script: String): SuResult =
-        exec("su", "-c", "nsenter -t 1 -m -- sh -c ${quote(script)}")
 
     private fun isUnknownSuFlag(text: String?): Boolean =
         text != null && (

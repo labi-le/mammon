@@ -79,8 +79,15 @@ Since v0.6.0 the app carries this module inside its own APK: `packModuleZip` in
 `app/build.gradle.kts` packs the directory deterministically into an asset, and an
 Install-module button stages it and hands it to a system chooser for Magisk to flash —
 mammon deliberately stops at that hand-off, because only Magisk completing its own flow
-proves an install (its probe distinguishes PRESENT from ABSENT, and treats a denied or
-timed-out su run as UNAVAILABLE rather than silently absent).
+proves an install. Its probe compares versionCodes rather than testing for a directory:
+v0.6.2 mapped "the module directory exists" to "already installed", which left a device
+carrying v1.0 unable to reach v1.1 through the UI at all. Both numbers are read where
+they live — `module.prop` inside the packaged asset zip for the bundled one, `module.prop`
+under `modules_update/` or `modules/` for the installed one, the staged copy winning
+because that is what the next boot runs — so no second copy of a version number exists to
+drift. An install at or past the bundled versionCode reports, an older one is offered the
+newer zip, and a denied, timed-out or unparseable probe stays UNAVAILABLE rather than
+silently absent or silently up to date.
 
 ### Why the FUSE rung is pure Kotlin and ships no binary
 

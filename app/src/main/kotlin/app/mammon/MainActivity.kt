@@ -250,31 +250,49 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Probes for the module off the main thread like the sibling buttons; PRESENT only
-     * reports, everything else stages the packaged zip and hands it to a chooser. The
-     * hand-off deliberately claims nothing about success — only Magisk completing its
-     * own flow proves an install.
+     * Probes for the module off the main thread like the sibling buttons; an install at
+     * or past the bundled versionCode only reports, an older or missing one stages the
+     * packaged zip and hands it to a chooser, and a probe or asset we could not read
+     * reports the reason instead. The hand-off deliberately claims nothing about success
+     * — only Magisk completing its own flow proves an install.
      */
     private fun onInstallModule() {
         installBtn.isEnabled = false
         mountStatus.setText(R.string.module_probe_working)
         INSTALL_IN_FLIGHT.set(true)
         thread(name = "module-install") {
-            val r = RootMount.probe(ModuleInstall.PROBE_SCRIPT)
-            val probe = ModuleInstall.classify(r.code, r.stdout)
+            val bundled = runCatching {
+                assets.open(ModuleInstall.ASSET_NAME).use(ModuleInstall::bundledVersionCode)
+            }.getOrNull()
+            // Nothing to compare against and nothing to hand over: the su prompt would
+            // buy a verdict we could not act on.
+            val verdict = if (bundled == null) null else {
+                val r = RootMount.probe(ModuleInstall.PROBE_SCRIPT)
+                ModuleInstall.classify(r.code, r.stdout, bundled)
+            }
             runOnUiThread {
                 INSTALL_IN_FLIGHT.set(false)
                 installBtn.isEnabled = true
-                mountStatus.text = when (probe) {
-                    ModuleInstall.Probe.PRESENT -> getString(R.string.module_already_installed)
-                    ModuleInstall.Probe.UNAVAILABLE -> getString(R.string.module_probe_unavailable)
-                    ModuleInstall.Probe.ABSENT -> launchInstaller()
-                }
+                mountStatus.text = installStatus(verdict)
             }
         }
     }
 
-    private fun launchInstaller(): String {
+    private fun installStatus(verdict: ModuleInstall.Verdict?): String = when (verdict?.probe) {
+        null -> getString(R.string.module_stage_failed)
+        ModuleInstall.Probe.PRESENT -> getString(R.string.module_already_installed)
+        ModuleInstall.Probe.UNAVAILABLE -> getString(R.string.module_probe_unavailable)
+        ModuleInstall.Probe.ABSENT -> launchInstaller(getString(R.string.module_handed_off))
+        ModuleInstall.Probe.OUTDATED -> launchInstaller(
+            getString(
+                R.string.module_update_handed_off,
+                verdict.installedVersionCode.toString(),
+                verdict.bundledVersionCode.toString(),
+            ),
+        )
+    }
+
+    private fun launchInstaller(handedOff: String): String {
         val staged = ModuleInstall.stagedFile(cacheDir)
         try {
             assets.open(ModuleInstall.ASSET_NAME).use { input ->
@@ -290,7 +308,7 @@ class MainActivity : AppCompatActivity() {
         }
         return try {
             startActivity(Intent.createChooser(intent, getString(R.string.module_chooser_title)))
-            getString(R.string.module_handed_off)
+            handedOff
         } catch (e: ActivityNotFoundException) {
             getString(R.string.module_no_handler)
         }

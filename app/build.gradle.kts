@@ -20,8 +20,8 @@ android {
         applicationId = "app.mammon"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.6.2"
+        versionCode = 14
+        versionName = "0.6.3"
     }
 
     // Local releases sign when keystore.properties exists; absent file keeps them unsigned (CI parity).
@@ -75,6 +75,12 @@ val packModuleZip = tasks.register<Zip>("packModuleZip") {
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
     destinationDirectory.set(temporaryDir)
+}
+
+// The unit test reads the real zip, not a fixture, so the zip-root layout stays tested.
+tasks.withType<Test>().configureEach {
+    dependsOn(packModuleZip)
+    systemProperty("mammon.moduleZip", packModuleZip.flatMap { it.archiveFile }.get().asFile.absolutePath)
 }
 
 abstract class ModuleAssetDirTask : DefaultTask() {

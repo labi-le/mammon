@@ -1,5 +1,6 @@
 package app.mammon
 
+import android.annotation.SuppressLint
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -439,4 +440,33 @@ object RootMount {
     private const val FS_LIST_MARKER = "__MAMMON_FS_LIST__"
 
     private const val SU_NOT_EXECUTABLE_CODE = -1
+}
+
+/**
+ * The mountpoints a real root mount can never serve, because they are Android's own
+ * emulated-storage surface: /storage is tmpfs, /storage/emulated is the MediaProvider
+ * FUSE mount, /sdcard is a symlink into it, and /data/media is its on-disk backing.
+ * Mounting there is refused before any su call; the SAF card is the only way to reach
+ * that storage. The module's fslib.sh automount mirrors this exact set.
+ *
+ * The "/sdcard" literal is a mountpoint prefix to match, never a path to open, so the
+ * SdCardPath detector's getExternalStorageDirectory() suggestion does not apply.
+ */
+@SuppressLint("SdCardPath")
+internal object MountpointPolicy {
+
+    /** Roots whose entire tree is emulated storage, checked at path-component
+     *  boundaries so /storageroom or /data/mediafoo stay mountable. */
+    val UNMOUNTABLE_ROOTS = listOf("/storage", "/sdcard", "/data/media")
+
+    /** Collapses // runs and a trailing / so "/storage/" and "//storage/x" still match;
+     *  empty collapses to "/". */
+    fun normalize(path: String): String =
+        path.trim().replace(Regex("/+"), "/").trimEnd('/').ifEmpty { "/" }
+
+    /** True when [path] is the emulated-storage tree (or one of its roots). */
+    fun isUnmountable(path: String): Boolean {
+        val p = normalize(path)
+        return UNMOUNTABLE_ROOTS.any { p == it || p.startsWith("$it/") }
+    }
 }

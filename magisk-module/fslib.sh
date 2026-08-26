@@ -207,6 +207,15 @@ mammon_automount_main() {
         /*) : ;;
         *) mammon_log "$log" "SKIPPED: mountpoint '$mp' is not absolute"; return 0 ;;
     esac
+    # Mirrors RootMount.MountpointPolicy: Android's own emulated storage (/storage is
+    # tmpfs, /storage/emulated the MediaProvider FUSE mount, /sdcard a symlink into it,
+    # /data/media its backing) can never host a real mount, so it is refused here too.
+    case $mp in
+        /storage|/storage/*|/sdcard|/sdcard/*|/data/media|/data/media/*)
+            mammon_log "$log" "SKIPPED: mountpoint '$mp' is Android's own storage, which cannot be remounted"
+            return 0
+            ;;
+    esac
     case $export_path in
         /*) : ;;
         *) mammon_log "$log" "SKIPPED: export '$export_path' is not absolute"; return 0 ;;

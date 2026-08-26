@@ -1,5 +1,6 @@
 package app.mammon
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -10,19 +11,47 @@ import java.util.concurrent.TimeUnit
  * fslib.sh's boot automount opens /dev/fuse and hands the descriptor to mount(2),
  * exactly like RootMount.kt's fuseMountScript. Magisk's /system/bin/sh is mksh, which
  * sets close-on-exec on fds >= 3 opened by `exec` redirection — so the mount child must
- * inherit the fd from a GROUP redirection, not from `exec 3<>`. This pin runs the real
+ * inherit the fd from a GROUP redirection, not from `exec 3<>`. These pins run the real
  * fslib.sh through its host dry-run overrides (MAMMON_PROC_MOUNTS / MAMMON_FUSE_DEVICE)
- * under mksh and asserts the stubbed mount still sees fd 3.
+ * under mksh: the first asserts the stubbed mount still sees fd 3, the second asserts
+ * an Android storage mountpoint is refused before the mount is ever attempted.
  */
 class FslibAutomountFuseFdTest {
 
     @Test fun `automount keeps fd 3 open across exec under mksh`() {
         val mksh = findOnPath("mksh")
         assumeTrue("mksh required (nix-shell -p mksh); skipped", mksh != null)
+        val fslib = fslib()
+        val (log, record) = runAutomount(fslib, mksh!!, "/mnt/nas")
+        assertTrue(
+            "automount mount stub saw fd 3 closed (mksh cloexec on exec-redirection fds >= 3):\n" +
+                "record:\n$record\nlog:\n$log",
+            record.contains("FD_OK"),
+        )
+    }
 
-        val fslib = File(System.getProperty("mammon.fslib") ?: "../magisk-module/fslib.sh")
-        assertTrue("fslib.sh not found at $fslib", fslib.isFile)
+    @Test fun `automount refuses Android storage mountpoints before mounting`() {
+        val mksh = findOnPath("mksh")
+        assumeTrue("mksh required (nix-shell -p mksh); skipped", mksh != null)
+        val fslib = fslib()
+        val (log, record) = runAutomount(fslib, mksh!!, "/storage/emulated/0/nfs")
+        assertTrue(
+            "automount must SKIP the storage mountpoint before any mount call:\n$log",
+            log.contains("SKIPPED: mountpoint '/storage/emulated/0/nfs' is Android's own storage"),
+        )
+        assertFalse("mount must never run for a refused mountpoint:\n$record", record.contains("MOUNT "))
+    }
 
+    /** Builds the harness once; the automount path needs the real magisk-module/fslib.sh. */
+    private fun fslib(): File {
+        val f = File(System.getProperty("mammon.fslib") ?: "../magisk-module/fslib.sh")
+        assertTrue("fslib.sh not found at $f", f.isFile)
+        return f
+    }
+
+    /** Runs mammon_automount_main under mksh with the given mountpoint saved, returning
+     *  the load.log text and the mount stub's record. */
+    private fun runAutomount(fslib: File, mksh: String, mountpoint: String): Pair<String, String> {
         val dir = File.createTempFile("mammon-fslib-", "").apply { delete(); mkdirs(); deleteOnExit() }
         File(dir, "automount").writeText("1")
         File(dir, "mammon.xml").writeText(
@@ -33,10 +62,10 @@ class FslibAutomountFuseFdTest {
                 "    <string name=\"host\">192.0.2.1</string>\n" +
                 "    <string name=\"export\">/export</string>\n" +
                 "    <int name=\"port\" value=\"2049\" />\n" +
-                "    <string name=\"mountpoint\">/mnt/nas</string>\n" +
+                "    <string name=\"mountpoint\">$mountpoint</string>\n" +
                 "</map>\n",
         )
-        File(dir, "mounts").writeText("") // nothing mounted at /mnt/nas
+        File(dir, "mounts").writeText("") // nothing mounted at $mountpoint
         val log = File(dir, "load.log").apply { writeText("") }
         val record = File(dir, "record").apply { writeText("") }
 
@@ -68,15 +97,10 @@ class FslibAutomountFuseFdTest {
         builder.environment()["MAMMON_WAIT_TRIES"] = "1"
         builder.environment()["MAMMON_WAIT_INTERVAL"] = "0"
         val proc = builder.start()
-        val out = proc.inputStream.bufferedReader().use { it.readText() }
-        val err = proc.errorStream.bufferedReader().use { it.readText() }
+        proc.inputStream.bufferedReader().use { it.readText() }
+        proc.errorStream.bufferedReader().use { it.readText() }
         proc.waitFor(SHELL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        val recordText = record.readText()
-        assertTrue(
-            "automount mount stub saw fd 3 closed (mksh cloexec on exec-redirection fds >= 3):\n" +
-                "record:\n$recordText\nstdout:\n$out\nstderr:\n$err\nlog:\n${log.readText()}",
-            recordText.contains("FD_OK"),
-        )
+        return log.readText() to record.readText()
     }
 
     private fun findOnPath(name: String): String? =

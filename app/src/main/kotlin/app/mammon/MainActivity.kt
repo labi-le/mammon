@@ -197,6 +197,13 @@ class MainActivity : AppCompatActivity() {
             mountpointLayout.error = getString(R.string.err_bad_mountpoint_absolute)
             return
         }
+        // Android's emulated storage is unmountable by construction (tmpfs /storage,
+        // MediaProvider FUSE over /storage/emulated, /sdcard a symlink into it), so it
+        // is refused here before any su call — the SAF card is the app-visible route.
+        if (MountpointPolicy.isUnmountable(mp)) {
+            mountpointLayout.error = getString(R.string.err_bad_mountpoint_storage)
+            return
+        }
         prefs.lastMountpoint = mp
         val spec = prefs.spec()
         if (doMount && spec == null) {

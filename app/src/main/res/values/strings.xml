@@ -50,6 +50,7 @@
     <string name="err_timeout">The server did not answer in time.</string>
     <string name="err_bad_config">Need a host and an export path like /export/data.</string>
     <string name="err_bad_mountpoint_absolute">Enter an absolute mountpoint path starting with / (a bare "/" is not valid).</string>
+    <string name="err_bad_mountpoint_storage">Android\'s own storage (/storage, /sdcard, /data/media) cannot be remounted — use /mnt/nas for the root mount, or the NFS share (SAF) card for app-visible access.</string>
     <string name="err_field_host">Enter the server host or IP.</string>
     <string name="err_field_export">Enter an export path starting with /.</string>
     <string name="err_field_port">Port must be 1–65535.</string>

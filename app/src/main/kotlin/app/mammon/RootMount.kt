@@ -194,8 +194,7 @@ object RootMount {
             }
             mkdir -p $mp || { mammon_dump; exit $FUSE_MKDIR_FAILED; }
             ${preloadLine("fuse")}
-            // NO_DEVICE needs no dump: the verdict is observed here directly, not
-            // inferred from any /proc read.
+            # NO_DEVICE is observed here directly, so it needs no /proc dump.
             exec 3<>/dev/fuse || exit $FUSE_NO_DEVICE
             mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse $mp || { mammon_dump; exit $FUSE_MOUNT_REFUSED; }
             if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi

@@ -166,10 +166,11 @@ object RootMount {
      * group redirection because Android's /system/bin/sh (mksh) sets close-on-exec on
      * fds >= 3 opened by `exec` redirection, which would make mount(2) fail EINVAL.
      *
-     * Not proven end to end on a real device: the daemon and NfsSession seam are proven
-     * on a Linux host, but the rooted-phone chain (su, the kernel FUSE mount, the
-     * descriptor surviving exec) is unverified — see docs/guides/architecture.md
-     * "Verification status".
+     * Proven end to end on a rooted phone (v0.6.6): the rooted-phone chain — su, the
+     * kernel FUSE mount, the descriptor surviving exec — has a real-device proof on
+     * Android 16 (KernelSU-Next); see docs/guides/architecture.md "Verification status".
+     * `--nice-name` sits between "/" and the class name: leading dash-args feed ART
+     * (unknown ones exit before main) and a trailing flag leaks into main()'s argv.
      *
      * The readiness probe must not touch the mountpoint before the daemon is known to
      * be serving — a FUSE request with nothing reading the device blocks forever — so
@@ -212,7 +213,9 @@ object RootMount {
             {
             mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse $mp || { mammon_dump; exit $FUSE_MOUNT_REFUSED; }
             if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
-            CLASSPATH=${quote(fuse.apkPath)} ${'$'}S app_process --nice-name=app.mammon:fuse / app.mammon.FuseDaemonKt 3 ${quote(host)} ${quote(port.toString())} ${quote(export)} </dev/null >>$log 2>&1 &
+            # app_process feeds leading dash-args to ART (unknown ones exit before main)
+            # and parses --nice-name only between "/" and the class. Same in fslib.sh.
+            CLASSPATH=${quote(fuse.apkPath)} ${'$'}S app_process / --nice-name=app.mammon:fuse app.mammon.FuseDaemonKt 3 ${quote(host)} ${quote(port.toString())} ${quote(export)} </dev/null >>$log 2>&1 &
             D=${'$'}!
             i=0
             while [ ${'$'}i -lt $FUSE_READY_TICKS ]; do

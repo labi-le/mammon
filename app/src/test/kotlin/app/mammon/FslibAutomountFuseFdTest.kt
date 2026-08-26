@@ -42,6 +42,27 @@ class FslibAutomountFuseFdTest {
         assertFalse("mount must never run for a refused mountpoint:\n$record", record.contains("MOUNT "))
     }
 
+    /**
+     * Same ART constraint RootMountScriptHygieneTest pins for fuseMountScript: the
+     * flag must sit between "/" and the daemon class — app_process feeds leading
+     * dash-args to ART (unknown ones exit before main) and a trailing flag leaks into
+     * main()'s argv. The automount line must keep that shape, or the boot mount dies
+     * exactly like the v0.6.5 app-side one did.
+     */
+    @Test fun `automount passes nice-name between the class dir and the daemon class`() {
+        val launch = fslib().readLines().first { "app.mammon.FuseDaemonKt" in it }
+        val classIdx = launch.indexOf("app.mammon.FuseDaemonKt")
+        val slashIdx = launch.indexOf(" / ")
+        val niceIdx = launch.indexOf("--nice-name=app.mammon:fuse")
+        assertTrue("no daemon class token in fslib.sh launch line: $launch", classIdx >= 0)
+        assertTrue("no classpath-dir argument in fslib.sh launch line: $launch", slashIdx >= 0)
+        assertTrue("no --nice-name in fslib.sh launch line: $launch", niceIdx >= 0)
+        assertTrue(
+            "--nice-name must sit between the / argument and app.mammon.FuseDaemonKt (leading flags die in ART, trailing ones leak into main):\n$launch",
+            niceIdx > slashIdx && classIdx > niceIdx,
+        )
+    }
+
     /** Builds the harness once; the automount path needs the real magisk-module/fslib.sh. */
     private fun fslib(): File {
         val f = File(System.getProperty("mammon.fslib") ?: "../magisk-module/fslib.sh")

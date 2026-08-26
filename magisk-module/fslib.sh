@@ -267,7 +267,9 @@ mammon_automount_main() {
         # writes past the mark — a stale 'serving' line from an earlier boot would
         # otherwise bless a daemon that died instantly.
         mark=$(wc -c <"$log")
-        CLASSPATH=$apk $S app_process --nice-name=app.mammon:fuse / app.mammon.FuseDaemonKt 3 "$host" "$port" "$export_path" </dev/null >>"$log" 2>&1 &
+        # app_process feeds leading dash-args to ART and parses --nice-name only
+        # between "/" and the class; same shape as RootMount.kt's fuseMountScript.
+        CLASSPATH=$apk $S app_process / --nice-name=app.mammon:fuse app.mammon.FuseDaemonKt 3 "$host" "$port" "$export_path" </dev/null >>"$log" 2>&1 &
         D=$!
         mammon_log "$log" "automount: daemon pid $D, probing readiness"
         k=0

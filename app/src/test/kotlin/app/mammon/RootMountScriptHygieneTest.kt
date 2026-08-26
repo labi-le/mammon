@@ -94,6 +94,28 @@ class RootMountScriptHygieneTest {
         )
     }
 
+    /**
+     * app_process feeds every leading dash-arg to ART (an unknown one exits before
+     * main) and parses `--nice-name` only after the "/" parent dir, before the class —
+     * a trailing flag leaks into main()'s argv and breaks the daemon's 4-arg contract.
+     * The v0.6.5 daemon died to the leading shape on a real device; this pins the flag
+     * between "/" and the class so neither shape can regress.
+     */
+    @Test fun `fuseMountScript passes nice-name between the class dir and the daemon class`() {
+        val launch = generated().first { it.first == "fuseMountScript" }.second
+            .lines().first { "app.mammon.FuseDaemonKt" in it }
+        val classIdx = launch.indexOf("app.mammon.FuseDaemonKt")
+        val slashIdx = launch.indexOf(" / ")
+        val niceIdx = launch.indexOf("--nice-name=app.mammon:fuse")
+        assertTrue("no daemon class token in launch line: $launch", classIdx >= 0)
+        assertTrue("no classpath-dir argument in launch line: $launch", slashIdx >= 0)
+        assertTrue("no --nice-name in launch line: $launch", niceIdx >= 0)
+        assertTrue(
+            "--nice-name must sit between the / argument and app.mammon.FuseDaemonKt (leading flags die in ART, trailing ones leak into main):\n$launch",
+            niceIdx > slashIdx && classIdx > niceIdx,
+        )
+    }
+
     private fun findOnPath(name: String): String? =
         (System.getenv("PATH").orEmpty().split(':').firstOrNull { File(it, name).canExecute() })
             ?.let { File(it, name).absolutePath }

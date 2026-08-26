@@ -143,10 +143,15 @@ daemon and the `NfsSession` seam are PROVEN on a Linux host: a real NFS export m
 inside `unshare -Umr`, reads verified byte-exact by sha256 against the same files read
 through the kernel's own NFS client, over both NFSv4.1 and NFSv3, and a clean `umount`.
 The end-to-end chain on a rooted Android phone — `su`, the kernel FUSE mount, and the
-inherited descriptor surviving `exec app_process` — is NOT verified by this project, and
-cannot be here: Waydroid has no `su`, so no emulator available to us can carry that
-test. Rung 3 on a real phone is therefore untested end to end; when it fails, read the
-diagnosis the ladder reports rather than assuming which half broke.
+inherited descriptor surviving `exec app_process` — is verified since v0.6.6 on one
+real device (Android 16, KernelSU-Next), where the daemon served a live export over
+NFSv4.1. Waydroid still has no `su`, so that emulator cannot carry the test, and the
+proof covers one device only: on any other phone, when rung 3 fails, read the diagnosis
+the ladder reports rather than assuming which half broke. The launch line carries a
+device-derived constraint: ART feeds every leading dash-arg to the VM and parses
+`--nice-name` only between the `/` classpath dir and the class name, so the flag must
+sit between them — a leading flag exits before main(), a trailing one leaks into the
+daemon's argv and breaks its 4-arg contract.
 
 What follows is the original decision input, kept because it explains the shape of what
 was built and which constraints each direction was chosen against.
@@ -205,7 +210,8 @@ with `sshfs`.
   cannot — open `/dev/fuse` and call `mount(2)`. Root is still required; that half never
   went away. Status above carries why the inversion is necessary, why the
   prebuilt-binary route was rejected rather than deferred, which narrowings the Kotlin
-  daemon accepts, and the fact that the rooted-phone chain is unverified.
+  daemon accepts, and the fact that the rooted-phone chain was first proven on a real
+  device in v0.6.6.
 - **Still not built from this shape:** the foreground service and the boot receiver. The
   mount is started one-shot from the activity, and the daemon is a detached root
   `app_process` rather than a service the app owns, so nothing restarts it after a reboot

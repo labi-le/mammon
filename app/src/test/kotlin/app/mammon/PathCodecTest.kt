@@ -38,6 +38,17 @@ class PathCodecTest {
         assertNull(PathCodec.pathFor("a/."))
     }
 
+    /**
+     * `componentOf` already refuses a NUL, but `deleteDocument` splits an id with
+     * `nameOf` and never reaches it, so the codec's own gates have to.
+     */
+    @Test fun `rejects an embedded NUL`() {
+        assertNull(PathCodec.pathFor("a\u0000b"))
+        assertNull(PathCodec.pathFor("a/b\u0000c"))
+        assertNull(PathCodec.parentOf("a/b\u0000c"))
+        assertNull(PathCodec.docIdFor("/a\u0000b"))
+    }
+
     @Test fun `name and child relations`() {
         assertEquals("c.txt", PathCodec.nameOf("a/b/c.txt"))
         assertEquals(PathCodec.ROOT_ID, PathCodec.nameOf(PathCodec.ROOT_ID))

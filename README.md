@@ -5,9 +5,10 @@ Mount NFS storage on an Android device. Inspired by
 
 ## Status
 
-v0.5.0: read and write NFS shares via SAF (rootless) and optionally mount them for real
-with root. The SAF side (`NfsDocumentsProvider`) is the primary surface and speaks both
-NFSv4.1 and NFSv3, picking the version per configured export without asking: v4.1
+v0.5.0: browse NFS shares via SAF (rootless), writing to them when the export speaks
+NFSv4.1 and the server accepts the configured identity, and optionally mount them for
+real with root. The SAF side (`NfsDocumentsProvider`) is the primary surface and speaks
+both NFSv4.1 and NFSv3, picking the version per configured export without asking: v4.1
 first, since it needs nothing but TCP 2049, then v3 for servers that still run
 rpcbind and mountd. One Mount button tries three rungs in order — kernel NFS
 `vers=4.2`, kernel NFS `vers=3`, then a FUSE daemon written in the same Kotlin and

@@ -11,7 +11,7 @@ object PathCodec {
     /** Canonical documentId for an export-absolute path ("/" or "/a/b"), null when malformed. */
     fun docIdFor(path: String): String? {
         if (path == "/") return ROOT_ID
-        if (!path.startsWith("/") || path.endsWith("/")) return null
+        if (!path.startsWith("/") || path.endsWith("/") || '\u0000' in path) return null
         val segments = path.split('/').filter { it.isNotEmpty() }
         if (segments.any { it == "." || it == ".." }) return null
         return segments.joinToString("/").ifEmpty { ROOT_ID }
@@ -21,7 +21,9 @@ object PathCodec {
     fun pathFor(docId: String): String? {
         if (docId.isEmpty()) return null
         if (docId == ROOT_ID) return "/"
-        if (docId.first() == '/' || docId.last() == '/') return null
+        // A NUL truncates the name on the wire, and deleteDocument reaches the backend
+        // with nameOf's raw split rather than through componentOf.
+        if (docId.first() == '/' || docId.last() == '/' || '\u0000' in docId) return null
         val segments = docId.split('/')
         if (segments.any { it.isEmpty() || it == "." || it == ".." }) return null
         return "/$docId"

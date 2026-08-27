@@ -36,7 +36,8 @@ mammon is an Android app for reading and writing NFS storage on a device, inspir
 directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 
 - **Primary — rootless SAF access** (direction C): `NfsDocumentsProvider` exposes the
-  configured export to any file manager, readable and writable — create, delete and
+  configured export to any file manager, readable and, where the backend implements it
+  (which means an NFSv4.1 server), writable — create, delete and
   write-mode `openDocument` through `StorageManager.openProxyFileDescriptor`, so a
   server refusal reaches the writer's own `write(2)` instead of a log line after its fd
   is gone. Row flags are optimistic by design and the exception a mutation throws is the
@@ -44,8 +45,11 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   protocol versions sit behind the
   `NfsSession` interface and are chosen per export with no UI switch — NFSv4.1 over
   `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
-  as the fallback for servers that still run rpcbind and mountd. The NFSv3 backend is
-  read-only, so its rows advertise no writes at all. AUTH_SYS sends a
+  as the fallback for servers that still run rpcbind and mountd. Against an NFSv3-only
+  export every child row advertises no writes — but the two rows built without a session,
+  the SAF root and the export root itself, still carry create, because answering them
+  costs no round trip precisely by not asking a backend. A save into the export root
+  therefore survives the picker and fails with Unsupported. AUTH_SYS sends a
   configured identity (uid, gid, supplementary gids), because root_squash — the export
   default — maps uid 0 to nobody and refuses every write. There is no "allow writes"
   toggle and never will be: writability is a property of the server, not of a setting.

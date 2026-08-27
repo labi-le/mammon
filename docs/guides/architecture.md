@@ -10,7 +10,8 @@
 All three directions below are now shipped. Direction C — the rootless
 DocumentsProvider — was PICKED on 2026-08-24 and remains the primary way mammon exposes
 NFS storage: the configured export shows up in any SAF file manager through
-`NfsDocumentsProvider` (authority `app.mammon.nfs`), readable and writable.
+`NfsDocumentsProvider` (authority `app.mammon.nfs`), readable, and writable on an
+NFSv4.1 export whose server permits the write.
 Since v0.4.0 that provider speaks two protocol versions behind one `NfsSession`
 interface, chosen per export with no UI switch: NFSv4.1 (`NfsV4Access`, over
 `org.dcache:nfs4j-core` XDR and `org.dcache:oncrpc4j-core` RPC) is tried first because
@@ -213,8 +214,16 @@ specified. The nodeid invalidation was proven there too: after an unlink and a r
 of the same name, `stat` reported a different inode and the new content, which is exactly
 the aliasing the node table's tombstone exists to prevent.
 
-That evidence is host-to-server only. Nothing about writing is proven on a phone, and the
-SAF provider does not consume the write half at all.
+The SAF write path has no evidence of its own on top of that. What was driven from a JVM
+host is the seam already proven above — the calls `createDocument`, `openDocument` and
+`deleteDocument` make, plus the one case the seam paragraph does not cover, REMOVE of a
+NON-empty directory raising `DirectoryNotEmpty`. The provider itself has never run
+anywhere: `openForWrite` needs `StorageManager.openProxyFileDescriptor` and an Android
+runtime, so the truncate-last ordering, the `createUnique` retry and the
+`ProxyFileDescriptorCallback` write loop are reasoned, not executed. `SafContractTest`
+pins only what needs neither a round trip nor that runtime — row flags, mode parsing,
+created names, and the failure and errno mappings. Nothing about writing is proven on a
+phone on either front end, and on the SAF side nothing above the seam is proven at all.
 
 The end-to-end chain on a rooted Android phone — `su`, the kernel FUSE mount, and the
 inherited descriptor surviving `exec app_process` — is verified since v0.6.6 on one

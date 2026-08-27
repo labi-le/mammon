@@ -14,9 +14,9 @@ rpcbind and mountd. One Mount button tries three rungs in order — kernel NFS
 serving the same NFS session — and the status line says which backing landed. There is
 no native code and no bundled binary: a root shell opens `/dev/fuse`, the app serves
 the protocol. The kernel rungs need a kernel with NFS support and a su setup that
-mounts into the global namespace; the FUSE view serves reads and writes and synthesises
-ownership and permissions. Design history and the full list of narrowings in
-`docs/guides/architecture.md`.
+mounts into the global namespace; the FUSE view synthesises ownership and permissions,
+and writes through to the server when it speaks NFSv4.1. Design history and the full
+list of narrowings in `docs/guides/architecture.md`.
 
 ## Kernel without NFS/FUSE?
 

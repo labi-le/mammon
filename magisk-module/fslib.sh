@@ -198,8 +198,11 @@ mammon_automount_main() {
     export_path=$(mammon_pref_value "$prefs" export) || { mammon_log "$log" "SKIPPED: automount enabled but no export saved in the app"; return 0; }
     port=$(mammon_pref_value "$prefs" port) || port=2049
     mp=$(mammon_pref_value "$prefs" mountpoint) || mp=/mnt/nas
+    # The daemon takes the identity as an optional 5th argument; an unset pref
+    # leaves it off, and the daemon then claims AuthIdentity.DEFAULT itself.
+    identity=$(mammon_pref_value "$prefs" identity) || identity=
     mp=${mp%/}
-    if ! mammon_quote_free "$host" || ! mammon_quote_free "$export_path" || ! mammon_quote_free "$mp"; then
+    if ! mammon_quote_free "$host" || ! mammon_quote_free "$export_path" || ! mammon_quote_free "$mp" || ! mammon_quote_free "$identity"; then
         mammon_log "$log" "SKIPPED: spec contains a single quote and is refused ($host:$port$export_path)"
         return 0
     fi
@@ -268,8 +271,10 @@ mammon_automount_main() {
         # otherwise bless a daemon that died instantly.
         mark=$(wc -c <"$log")
         # app_process feeds leading dash-args to ART and parses --nice-name only
-        # between "/" and the class; same shape as RootMount.kt's fuseMountScript.
-        CLASSPATH=$apk $S app_process / --nice-name=app.mammon:fuse app.mammon.FuseDaemonKt 3 "$host" "$port" "$export_path" </dev/null >>"$log" 2>&1 &
+        # between "/" and the class; same shape as RootMount.kt's fuseMountScript,
+        # which passes the identity in the same trailing position.
+        # shellcheck disable=SC2086 # $identity is one pre-validated field or empty
+        CLASSPATH=$apk $S app_process / --nice-name=app.mammon:fuse app.mammon.FuseDaemonKt 3 "$host" "$port" "$export_path" $identity </dev/null >>"$log" 2>&1 &
         D=$!
         mammon_log "$log" "automount: daemon pid $D, probing readiness"
         k=0

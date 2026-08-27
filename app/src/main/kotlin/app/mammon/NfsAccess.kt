@@ -16,9 +16,12 @@ import java.net.InetSocketAddress
  * itself open (the library has no harder hook), so a query still holding this
  * instance across a config change finishes on its own connection instead of failing.
  *
+ * Read-only by type: this backend exists as the fallback for servers too old for v4.1,
+ * and [ReadOnlyNfsSession] is where the mutating half's refusals live.
+ *
  * Every method blocks on network I/O: callers must stay off the main thread.
  */
-class NfsAccess(target: NfsTarget) : NfsSession {
+class NfsAccess(target: NfsTarget) : ReadOnlyNfsSession {
 
     private val spec = target.spec
 
@@ -32,10 +35,6 @@ class NfsAccess(target: NfsTarget) : NfsSession {
         },
         RETRIES,
     )
-
-    /** Read-only: the mutating half of [NfsSession] is left at its refusing default,
-     *  because this backend exists as the fallback for servers too old for v4.1. */
-    override val supportsWrites = false
 
     override fun probeRoot(): NodeAttrs? {
         val root = nfs.newFile("/")

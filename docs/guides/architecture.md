@@ -158,6 +158,14 @@ Split honestly, because the two halves have very different evidence behind them.
 daemon and the `NfsSession` seam are PROVEN on a Linux host: a real NFS export mounted
 inside `unshare -Umr`, reads verified byte-exact by sha256 against the same files read
 through the kernel's own NFS client, over both NFSv4.1 and NFSv3, and a clean `umount`.
+The write half of the seam is PROVEN against a real NFSv4.1 export (Linux nfsd,
+root_squash) by running the production classes out of this repository: MKDIR refused
+with NFS4ERR_ACCESS as uid 0 and accepted as the configured account, a GUARDED4
+create refusing a second create instead of truncating, a 2 MiB create/write/read
+round trip byte-exact by sha256, SETATTR of size and mtime read back exactly, and
+REMOVE of both a file and an empty directory. That evidence is host-to-server only:
+no front end consumes the write half, so nothing about writing is proven on a phone.
+
 The end-to-end chain on a rooted Android phone — `su`, the kernel FUSE mount, and the
 inherited descriptor surviving `exec app_process` — is verified since v0.6.6 on one
 real device (Android 16, KernelSU-Next), where the daemon served a live export over
@@ -167,7 +175,8 @@ the ladder reports rather than assuming which half broke. The launch line carrie
 device-derived constraint: ART feeds every leading dash-arg to the VM and parses
 `--nice-name` only between the `/` classpath dir and the class name, so the flag must
 sit between them — a leading flag exits before main(), a trailing one leaks into the
-daemon's argv and breaks its 4-arg contract.
+daemon's argv, where it is taken for the optional identity field and reported as
+unparseable.
 
 What follows is the original decision input, kept because it explains the shape of what
 was built and which constraints each direction was chosen against.

@@ -6,7 +6,11 @@ import java.io.InputStream
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 
-/** Bytes per NFS READ, and the pump buffer size the provider matches to it. */
+/**
+ * Bytes per NFS READ the app is willing to ask for, and the pump buffer size the
+ * provider matches to it. Only a ceiling: the session clamps every payload to what
+ * CREATE_SESSION actually granted, which may be smaller.
+ */
 const val NFS_READ_CHUNK = 512 * 1024
 
 /**
@@ -40,9 +44,17 @@ sealed class NfsFailure(message: String) : IOException(message) {
     /** What a GUARDED4 create answers, so a create never silently truncates. */
     class AlreadyExists(what: String) : NfsFailure("already exists: $what")
 
+    /** Its own case because a recursive delete treats it as ordinary control flow, and
+     *  would abort on the generic error the way it does on EIO. */
+    class DirectoryNotEmpty(what: String) : NfsFailure("directory not empty: $what")
+
+    /** Quota counts as full: both mean the write will not fit, and neither is retryable. */
+    class OutOfSpace(what: String) : NfsFailure("no space left: $what")
+
     /**
      * Refusal, not failure: this backend has no implementation, so no server was asked.
-     * Callers that must not present a writable surface consult [NfsSession.supportsWrites].
+     * A frontend can rule this out up front with [NfsSession.implementsWrites], but must
+     * still handle [PermissionDenied] per call, which is the only real capability answer.
      */
     class Unsupported(operation: String) : NfsFailure("$operation is not supported by this NFS backend")
 
@@ -76,14 +88,20 @@ interface NfsFile : Closeable {
  * server session. Every method blocks on network I/O: callers must stay off the main
  * thread.
  *
- * The mutating half defaults to refusing, so a backend that cannot serve it says so by
- * omission rather than by pretending. [supportsWrites] has no default on purpose: a new
- * backend must state its answer instead of inheriting one.
+ * Every member is abstract, mutating ones included: a backend that declares
+ * [implementsWrites] cannot then forget one of them and fail at runtime instead. A
+ * read-only backend implements [ReadOnlyNfsSession], which is where the refusals live.
  */
 interface NfsSession : Closeable {
 
-    /** False when every mutating member below refuses; true when all of them work. */
-    val supportsWrites: Boolean
+    /**
+     * Whether this BACKEND implements the mutating half. It says nothing about whether
+     * the export or the claimed identity permits a write: a `ro` export and a squashed
+     * uid both answer true here and then fail every call with
+     * [NfsFailure.PermissionDenied]. A frontend may use it to avoid advertising a
+     * writable surface it can never serve; it may not use it as permission.
+     */
+    val implementsWrites: Boolean
 
     /** Export root attributes, null when the export is missing or not a directory. */
     fun probeRoot(): NodeAttrs?
@@ -96,7 +114,7 @@ interface NfsSession : Closeable {
 
     /**
      * Opens [docId]; throws when it is missing or not a regular file. The handle also
-     * serves [NfsFile.writeAt] on a backend whose [supportsWrites] is true.
+     * serves [NfsFile.writeAt] on a backend whose [implementsWrites] is true.
      */
     fun openFile(docId: String): NfsFile
 
@@ -106,18 +124,42 @@ interface NfsSession : Closeable {
      * Creates [name] under [parentDocId] and returns it open, failing with
      * [NfsFailure.AlreadyExists] rather than truncating an existing file.
      */
-    fun createFile(parentDocId: String, name: String): NfsFile =
-        throw NfsFailure.Unsupported("create")
+    fun createFile(parentDocId: String, name: String): NfsFile
 
-    fun makeDirectory(parentDocId: String, name: String): Unit =
-        throw NfsFailure.Unsupported("mkdir")
+    fun makeDirectory(parentDocId: String, name: String)
 
-    /** Removes [name] under [parentDocId], whether a file or an empty directory. */
-    fun remove(parentDocId: String, name: String): Unit =
-        throw NfsFailure.Unsupported("remove")
+    /**
+     * Removes [name] under [parentDocId], whether a file or an empty directory: NFSv4
+     * has one REMOVE and does not discriminate by type. A frontend owing POSIX
+     * semantics — `unlink(2)` must fail EISDIR on a directory, `rmdir(2)` ENOTDIR on a
+     * file — has to check the type itself; the server will not.
+     */
+    fun remove(parentDocId: String, name: String)
 
     /** Sets whichever of [size] and [modifiedMillis] is non-null, in one round trip. */
-    fun setAttributes(docId: String, size: Long? = null, modifiedMillis: Long? = null): Unit =
+    fun setAttributes(docId: String, size: Long? = null, modifiedMillis: Long? = null)
+}
+
+/**
+ * A backend that serves reads only. Implementing this is the whole declaration: the
+ * refusals below are the reason [NfsSession] can keep every member abstract, so
+ * "declared writable but left a member unimplemented" is a compile error rather than a
+ * runtime surprise on the first create.
+ */
+interface ReadOnlyNfsSession : NfsSession {
+
+    override val implementsWrites: Boolean get() = false
+
+    override fun createFile(parentDocId: String, name: String): NfsFile =
+        throw NfsFailure.Unsupported("create")
+
+    override fun makeDirectory(parentDocId: String, name: String): Unit =
+        throw NfsFailure.Unsupported("mkdir")
+
+    override fun remove(parentDocId: String, name: String): Unit =
+        throw NfsFailure.Unsupported("remove")
+
+    override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?): Unit =
         throw NfsFailure.Unsupported("setattr")
 }
 

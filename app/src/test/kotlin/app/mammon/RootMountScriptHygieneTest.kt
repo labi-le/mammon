@@ -97,7 +97,8 @@ class RootMountScriptHygieneTest {
     /**
      * app_process feeds every leading dash-arg to ART (an unknown one exits before
      * main) and parses `--nice-name` only after the "/" parent dir, before the class —
-     * a trailing flag leaks into main()'s argv and breaks the daemon's 4-arg contract.
+     * a trailing flag leaks into main()'s argv, where the daemon reads it as its identity
+     * field.
      * The v0.6.5 daemon died to the leading shape on a real device; this pins the flag
      * between "/" and the class so neither shape can regress.
      */

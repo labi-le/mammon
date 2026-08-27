@@ -72,9 +72,10 @@ import javax.security.auth.Subject
  * to a sixty-fourth of [NFS_READ_CHUNK].
  *
  * READ, WRITE and SETATTR use the anonymous stateid, so nothing here needs a
- * lease-renewal timer; only file creation takes OPEN state, and it hands that state
- * straight back with a CLOSE in the same COMPOUND. A session the server has reaped is
- * re-established in place by [resilient] on the next call that trips over it.
+ * lease-renewal timer. Only file creation takes OPEN state, and it gives that state
+ * straight back — in the same COMPOUND where the server accepts a CLOSE there, in a
+ * second one where it does not. A session the server has reaped is re-established in
+ * place by [resilient] on the next call that trips over it.
  *
  * Every method blocks on network I/O: callers must stay off the main thread.
  */
@@ -116,12 +117,14 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
     @Volatile private var rootFh: nfs_fh4? = null
 
     /**
-     * Cleared for the rest of this instance's life the first time a server refuses a
-     * CLOSE beside its OPEN, so the extra round trip is paid once rather than per create.
+     * Cleared once a server refuses a CLOSE beside its OPEN. It saves no round trip —
+     * such a server needs two either way — only the doomed CLOSE operation inside the
+     * first COMPOUND, and with it the error reply that [createFile] would otherwise have
+     * to interpret on every create.
      */
     @Volatile private var closeBesideOpen = true
 
-    override val supportsWrites = true
+    override val implementsWrites = true
 
     init {
         try {
@@ -148,7 +151,7 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         return attrsAt(path)?.toNode()
     }
 
-    override fun list(docId: String): List<ChildEntry> {
+    override fun list(docId: String): List<ChildEntry> = failing(docId) {
         val dirPath = requireNotNull(PathCodec.pathFor(docId))
         val children = ArrayList<ChildEntry>()
         var cookie = 0L
@@ -175,10 +178,10 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
             // one: continuing would spin on the same cookie forever.
             if (reply.reply.eof || !seen) break
         }
-        return children.directoriesFirst()
+        children.directoriesFirst()
     }
 
-    override fun openFile(docId: String): NfsFile {
+    override fun openFile(docId: String): NfsFile = failing(docId) {
         val path = requireNotNull(PathCodec.pathFor(docId))
         val res = try {
             compoundAt(path, "open") {
@@ -190,7 +193,7 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         }
         val attrs = Fattr4Codec.decode(lastOf(res, nfs_opnum4.OP_GETATTR).opgetattr.resok4.obj_attributes)
         if (attrs == null || !attrs.isRegular) throw NfsFailure.Server("not a regular file: $docId")
-        return Handle(lastOf(res, nfs_opnum4.OP_GETFH).opgetfh.resok4.`object`)
+        Handle(lastOf(res, nfs_opnum4.OP_GETFH).opgetfh.resok4.`object`)
     }
 
     override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?) {
@@ -204,6 +207,8 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         }
     }
 
+    /** The mode is nfs4j's, not ours: withMakedir hardcodes 0755, where a created file
+     *  gets [CREATE_MODE] from this file. */
     override fun makeDirectory(parentDocId: String, name: String) {
         val parent = requireNotNull(PathCodec.pathFor(parentDocId))
         val child = component(name)
@@ -222,12 +227,16 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
 
     /**
      * OPEN(OPEN4_CREATE, GUARDED4) + GETFH + CLOSE in one COMPOUND, so a create costs one
-     * round trip and leaves no open state behind. GUARDED4 rather than UNCHECKED4 because
-     * a file manager must answer "it already exists", never truncate.
+     * round trip on a server that accepts the CLOSE there, and two on one that does not.
+     * GUARDED4 rather than UNCHECKED4 because a file manager must answer "it already
+     * exists", never truncate.
      *
      * A server that refuses the CLOSE beside the OPEN has still created the file — a
      * failing operation terminates the COMPOUND, so everything before it ran — so that
-     * reply is read operation by operation and the CLOSE is retried on its own.
+     * reply is read operation by operation and the CLOSE is retried on its own. Once the
+     * file exists, nothing about the CLOSE may fail the create: an unclosed open state
+     * costs a lease, while a create reported as failed strands a file the caller will
+     * then be told already exists.
      */
     override fun createFile(parentDocId: String, name: String): NfsFile {
         val parent = requireNotNull(PathCodec.pathFor(parentDocId))
@@ -248,16 +257,19 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
             val stateid = lastOf(res, nfs_opnum4.OP_OPEN).opopen.resok4.stateid
             val handle = resultOf(res, nfs_opnum4.OP_GETFH)?.opgetfh?.takeIf { it.status == nfsstat.NFS_OK }
             if (handle == null) {
-                // Unreachable in practice: GETFH cannot fail behind a successful OPEN.
-                // The open state cannot be closed without a handle to PUTFH, so it is
-                // left for the server's lease to reap.
+                // Reachable, and the reason this branch exists: `tolerate` admits any
+                // reply whose OPEN succeeded, GETFH's own failure included. The open
+                // state cannot be closed without a handle to PUTFH, so it is left for
+                // the server's lease to reap.
                 closeBesideOpen = false
                 throw NfsFailure.Server("nfs4 create reply carries no filehandle")
             }
             val fh = handle.resok4.`object`
+            if (res.status != nfsstat.NFS_OK) closeBesideOpen = false
             if (!fused || res.status != nfsstat.NFS_OK) {
-                closeBesideOpen = false
-                resilient { inSession(compound("close") { withPutfh(fh); withClose(stateid, 0) }) }
+                runCatching {
+                    resilient { inSession(compound("close") { withPutfh(fh); withClose(stateid, 0) }) }
+                }
             }
             Handle(fh)
         }
@@ -270,14 +282,14 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         runCatching { rpc.close() }
     }
 
-    private fun attrsAt(path: String): Attrs4? {
+    private fun attrsAt(path: String): Attrs4? = failing(path) {
         val res = try {
             compoundAt(path, "getattr") { withGetattr(*Fattr4Codec.REQUEST) }
         } catch (e: ChimeraNFSException) {
-            if (e.status in ABSENT) return null
+            if (e.status in ABSENT) return@failing null
             throw e
         }
-        return Fattr4Codec.decode(lastOf(res, nfs_opnum4.OP_GETATTR).opgetattr.resok4.obj_attributes)
+        Fattr4Codec.decode(lastOf(res, nfs_opnum4.OP_GETATTR).opgetattr.resok4.obj_attributes)
     }
 
     /**
@@ -477,7 +489,13 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         return fresh
     }
 
-    /** Maps the server's status onto the seam's failures, so no frontend parses prose. */
+    /**
+     * Maps the server's status onto the seam's failures, so no frontend parses prose.
+     * Every status a frontend has to act on differently gets its own case: NOTEMPTY
+     * because a recursive delete treats it as ordinary, NOSPC and DQUOT because they must
+     * not look like an I/O fault. What is left in [NfsFailure.Server] carries the status
+     * name in its message for a human, not for a caller to match on.
+     */
     private inline fun <T> failing(what: String, op: () -> T): T =
         try {
             op()
@@ -487,6 +505,8 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
                     NfsFailure.PermissionDenied(what)
                 nfsstat.NFSERR_NOENT, nfsstat.NFSERR_NOTDIR -> NfsFailure.NotFound(what)
                 nfsstat.NFSERR_EXIST -> NfsFailure.AlreadyExists(what)
+                nfsstat.NFSERR_NOTEMPTY -> NfsFailure.DirectoryNotEmpty(what)
+                nfsstat.NFSERR_NOSPC, nfsstat.NFSERR_DQUOT -> NfsFailure.OutOfSpace(what)
                 else -> NfsFailure.Server("${nfsstat.toString(e.status)}: $what")
             }
         }
@@ -619,9 +639,15 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         fun resultOf(res: COMPOUND4res, opnum: Int): nfs_resop4? =
             res.resarray.lastOrNull { it.resop == opnum }
 
-        /** A foreign display name reaches the wire as one component, or not at all. */
+        /**
+         * A foreign display name reaches the wire as one component, or not at all. This
+         * is a client-side rejection — no server was asked — so it is not an
+         * [NfsFailure]: it matches the argument checks the same methods already make on
+         * a malformed documentId, and a frontend maps it to EINVAL or its own
+         * illegal-argument answer.
+         */
         fun component(name: String): String =
-            PathCodec.componentOf(name) ?: throw NfsFailure.Server("unusable name")
+            requireNotNull(PathCodec.componentOf(name)) { "unusable name" }
 
         fun getfh(): nfs_argop4 = nfs_argop4().apply { argop = nfs_opnum4.OP_GETFH }
 
@@ -671,12 +697,19 @@ private val RETRY_AFTER_DELAY = intArrayOf(nfsstat.NFSERR_DELAY, nfsstat.NFSERR_
 /**
  * Whether a COMPOUND that came back with [status] may be rebuilt and re-sent.
  *
- * With [nonIdempotent] the answer narrows to statuses only SEQUENCE, PUTFH or LOOKUP can
- * produce, which prove the operation itself never ran: RFC 5661 section 15 terminates a
- * COMPOUND at its first failing operation, and section 16.2.3 makes the COMPOUND status
- * that operation's status. NFS4ERR_EXPIRED is the one exclusion, because section 15.2
- * lists OPEN, SETATTR and WRITE among the operations that return it themselves — so it
- * cannot prove anything about whether a create or a REMOVE took effect.
+ * With [nonIdempotent] the answer narrows to statuses the server produces BEFORE the
+ * operation can have had any effect, which is what makes a retry safe rather than a
+ * second execution: a session error rejects the COMPOUND at its leading SEQUENCE, and
+ * STALE or FHEXPIRED says the object the operation names does not exist. RFC 5661
+ * section 15 terminates a COMPOUND at its first failing operation and section 16.2.3
+ * makes the COMPOUND status that operation's status, so a replied error is always an
+ * operation that did not apply.
+ *
+ * Note the test is "produced before any effect", NOT "only SEQUENCE, PUTFH or LOOKUP
+ * return it" — section 15.4 lists STALE and FHEXPIRED as valid returns of REMOVE,
+ * SETATTR and WRITE too. NFS4ERR_EXPIRED is the exclusion because it is the one
+ * recoverable status that says nothing about effect: section 15.2 has OPEN, SETATTR and
+ * WRITE return it themselves, on a lease that expired around the operation.
  */
 internal fun recoverable(status: Int, nonIdempotent: Boolean): Boolean =
     status in RECOVERABLE && !(nonIdempotent && status == nfsstat.NFSERR_EXPIRED)

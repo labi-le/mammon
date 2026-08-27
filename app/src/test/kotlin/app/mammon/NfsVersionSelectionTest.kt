@@ -15,9 +15,8 @@ import org.junit.Test
  */
 class NfsVersionSelectionTest {
 
-    private class Fake : NfsSession {
+    private class Fake : ReadOnlyNfsSession {
         var closed = false
-        override val supportsWrites = false
         override fun probeRoot(): NodeAttrs? = null
         override fun stat(docId: String): NodeAttrs? = null
         override fun list(docId: String): List<ChildEntry> = emptyList()

@@ -1,6 +1,6 @@
 id=mammon_fsloader
 name=Mammon FS Loader
-version=v1.2
-versionCode=3
+version=v1.3
+versionCode=4
 author=labile
 description=Scans the usual Android kernel-module directories at every boot and insmods any fuse/nfs candidate .ko found there, recording every attempt in load.log next to module.prop. Exists so the mammon mount ladder meets a kernel that already registered fuse/nfs. It cannot add support the kernel lacks: if no matching .ko ships anywhere, or the kernel rejects the file (signature or vermagic), only a custom kernel helps.

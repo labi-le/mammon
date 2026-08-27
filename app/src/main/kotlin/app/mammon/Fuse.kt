@@ -77,6 +77,16 @@ internal object Fuse {
     const val KSTATFS_SIZE = 80
 
     const val SETATTR_IN_SIZE = 88
+
+    /**
+     * Offsets inside `fuse_setattr_in` of the three fields SETATTR is served from. Named
+     * here beside the size because the size alone would not catch an upstream field
+     * insertion: the struct would grow, this file would be updated, and the reads would
+     * quietly move to the wrong words.
+     */
+    const val SETATTR_SIZE_AT = 16
+    const val SETATTR_MTIME_AT = 40
+    const val SETATTR_MTIMENSEC_AT = 60
     const val CREATE_IN_SIZE = 16
     const val MKDIR_IN_SIZE = 8
     const val WRITE_IN_SIZE = 40

@@ -511,11 +511,20 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         return fresh
     }
 
-    /** The attributes from a GETATTR that rode another operation's COMPOUND. */
-    private fun decoded(res: COMPOUND4res, what: String): NodeAttrs =
-        Fattr4Codec.decode(lastOf(res, nfs_opnum4.OP_GETATTR).opgetattr.resok4.obj_attributes)
-            ?.toNode()
+    /**
+     * The attributes from a GETATTR that rode another operation's COMPOUND. The result is
+     * checked rather than dereferenced: a `tolerate` predicate can admit a reply whose
+     * leading operation succeeded and whose GETATTR did not, and an unguarded resok4
+     * there is a NullPointerException that no caller is typed to catch.
+     */
+    private fun decoded(res: COMPOUND4res, what: String): NodeAttrs {
+        val ok = resultOf(res, nfs_opnum4.OP_GETATTR)
+            ?.opgetattr
+            ?.takeIf { it.status == nfsstat.NFS_OK }
+            ?: throw NfsFailure.Server("nfs4 reply carries no attributes: $what")
+        return Fattr4Codec.decode(ok.resok4.obj_attributes)?.toNode()
             ?: throw NfsFailure.Server("nfs4 reply carries undecodable attributes: $what")
+    }
 
     /**
      * Maps the server's status onto the seam's failures, so no frontend parses prose.

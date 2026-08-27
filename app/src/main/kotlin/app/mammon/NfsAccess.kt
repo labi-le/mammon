@@ -77,12 +77,20 @@ class NfsAccess(target: NfsTarget) : ReadOnlyNfsSession {
         return children.directoriesFirst()
     }
 
-    /** One GETATTR, where exists() plus isFile was two: both ask the same question. */
+    /**
+     * The [Nfs3File] must be built once and kept. Constructing one resolves the whole
+     * ancestor chain — a LOOKUP and a GETATTR per component — so building a second to
+     * wrap in the handle would double the cost of every open, and the handle would start
+     * unresolved and pay one more LOOKUP on its first read. Reading the attributes off
+     * the same instance also replaces the isFile() call, which asked the server what
+     * exists() had just been told.
+     */
     override fun openFile(docId: String): OpenedFile {
-        val path = requireNotNull(PathCodec.pathFor(docId))
-        val attrs = statPath(path) ?: throw NfsFailure.NotFound(docId)
+        val file = fileFor(requireNotNull(PathCodec.pathFor(docId)))
+        if (!file.exists()) throw NfsFailure.NotFound(docId)
+        val attrs = file.attributes
         if (attrs.type != NfsType.NFS_REG) throw NfsFailure.Server("not a regular file: $docId")
-        return OpenedFile(Handle(fileFor(path)), attrs.toNode())
+        return OpenedFile(Handle(file), attrs.toNode())
     }
 
     /** One READ per call against a resolved handle; the server caps [len] at its rtmax. */

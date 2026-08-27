@@ -357,10 +357,12 @@ class FuseNfsDaemon(
         val path = nodes.pathOf(nodeid) ?: return fail(unique, Fuse.ENOENT, reply)
         val docId = PathCodec.docIdFor(path) ?: return fail(unique, Fuse.ENOENT, reply)
 
-        val size = if (valid and Fuse.FATTR_SIZE != 0) head.getLong(body + 16) else null
+        val size =
+            if (valid and Fuse.FATTR_SIZE != 0) head.getLong(body + Fuse.SETATTR_SIZE_AT) else null
         val mtime = when {
             valid and Fuse.FATTR_MTIME != 0 ->
-                head.getLong(body + 40) * 1000L + head.getInt(body + 60) / 1_000_000L
+                head.getLong(body + Fuse.SETATTR_MTIME_AT) * 1000L +
+                    head.getInt(body + Fuse.SETATTR_MTIMENSEC_AT) / 1_000_000L
             valid and Fuse.FATTR_MTIME_NOW != 0 -> System.currentTimeMillis()
             else -> null
         }
@@ -398,7 +400,6 @@ class FuseNfsDaemon(
         val parentPath = nodes.pathOf(parent) ?: return fail(unique, Fuse.ENOENT, reply)
         val parentId = PathCodec.docIdFor(parentPath) ?: return fail(unique, Fuse.ENOENT, reply)
         val path = PathCodec.childPath(parentPath, name) ?: return fail(unique, Fuse.EINVAL, reply)
-        val docId = PathCodec.docIdFor(path) ?: return fail(unique, Fuse.EINVAL, reply)
 
         // One round trip: the create COMPOUND carries the handle this open needs AND the
         // attributes the reply owes, so nothing here re-walks the path.
@@ -444,7 +445,6 @@ class FuseNfsDaemon(
         val parentPath = nodes.pathOf(parent) ?: return fail(unique, Fuse.ENOENT, reply)
         val parentId = PathCodec.docIdFor(parentPath) ?: return fail(unique, Fuse.ENOENT, reply)
         val path = PathCodec.childPath(parentPath, name) ?: return fail(unique, Fuse.EINVAL, reply)
-        val docId = PathCodec.docIdFor(path) ?: return fail(unique, Fuse.EINVAL, reply)
 
         val attrs = try {
             session.makeDirectory(parentId, name)

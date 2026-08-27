@@ -56,8 +56,9 @@ If something is already mounted at the target, the pass logs a clean skip
 instead. Everything lands in `load.log`; the final line of each block reads
 `MOUNTED:` / `SKIPPED:` / `FAILED:` with the reason.
 
-The mount is read-write, since it runs the same daemon as the app's own
-Mount button; renaming is the one thing it refuses. Unmount by rebooting
+The mount accepts writes when the server speaks NFSv4.1, since it runs the
+same daemon as the app's own Mount button; against an NFSv3-only export it
+stays read-only, and renaming is refused either way. Unmount by rebooting
 without the flag file or from the app's Unmount button.
 
 ## Honest limitation

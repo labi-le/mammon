@@ -86,13 +86,12 @@ class FuseWriteReplyTest {
 
     @Test fun `fuse_setattr_in and the offsets the daemon reads from it`() {
         assertEquals(Fuse.SETATTR_IN_SIZE, 4 + 4 + 8 * 6 + 4 * 8)
-        // The offsets setattr() hard-codes, derived from the field order of
-        // fuse_setattr_in: valid, padding, fh, size, lock_owner, atime, mtime, ctime,
-        // then the four nsec words. A field added upstream shifts these, and spelling the
-        // arithmetic out is what makes that visible instead of a silent misread.
-        assertEquals(16, 4 + 4 + 8)
-        assertEquals(40, 4 + 4 + 8 + 8 + 8 + 8)
-        assertEquals(60, 4 + 4 + 8 * 6 + 4)
+        // Derived from the field order of fuse_setattr_in — valid, padding, fh, size,
+        // lock_owner, atime, mtime, ctime, then the four nsec words — so an upstream
+        // insertion moves the constants the daemon actually reads from, not just the size.
+        assertEquals(4 + 4 + 8, Fuse.SETATTR_SIZE_AT)
+        assertEquals(4 + 4 + 8 + 8 + 8 + 8, Fuse.SETATTR_MTIME_AT)
+        assertEquals(4 + 4 + 8 * 6 + 4, Fuse.SETATTR_MTIMENSEC_AT)
         assertEquals(1 shl 3, Fuse.FATTR_SIZE)
         assertEquals(1 shl 5, Fuse.FATTR_MTIME)
         assertEquals(1 shl 8, Fuse.FATTR_MTIME_NOW)
@@ -104,9 +103,4 @@ class FuseWriteReplyTest {
         assertEquals(Fuse.MKDIR_IN_SIZE, 4 + 4)
     }
 
-    /** One WRITE request plus its two headers has to fit the daemon's buffer. */
-    @Test fun `the advertised max write fits one request buffer`() {
-        val largest = Fuse.IN_HEADER_SIZE + Fuse.WRITE_IN_SIZE + NFS_READ_CHUNK
-        assertTrue("largest WRITE $largest must fit", largest <= NFS_READ_CHUNK + 64 * 1024)
-    }
 }

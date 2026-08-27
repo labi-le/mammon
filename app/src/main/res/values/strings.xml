@@ -40,7 +40,7 @@
     <string name="module_stage_failed">Could not unpack the module zip from the app.</string>
 
     <string name="mounted_state">Mounted (%1$s) at %2$s</string>
-    <string name="mounted_state_fuse">Mounted at %1$s via the mammon FUSE daemon — read-write, except renaming. Files are shown as owned by root.</string>
+    <string name="mounted_state_fuse">Mounted at %1$s via the mammon FUSE daemon. Writing needs an NFSv4.1 server and never supports renaming; files are shown as owned by root.</string>
     <string name="not_mounted_state">Not mounted.</string>
     <string name="unknown_state">Mount state unknown (cannot read the global mount table).</string>
     <string name="not_mounted_after_mount">Mount command succeeded, but the share is not visible in the global mount table.</string>

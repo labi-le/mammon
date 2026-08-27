@@ -56,11 +56,12 @@ v0.5.0 `RootMount` walks one three-rung ladder and stops at the first rung that 
 
 The status line names which backing landed, because the three are not interchangeable:
 the kernel rungs give a full POSIX mount carrying the server's own ownership and
-permission bits, while the FUSE rung gives a read-write view with synthesised metadata
-(see below). Rungs 1 and 2 work only on devices whose kernel has NFS support and whose
-su setup lets the mount land in the global namespace; rung 3 needs no NFS support in the
-kernel at all, only `/dev/fuse` and root — that is the whole reason it exists. One NFS
-implementation now backs both surfaces: the daemon carries no second client.
+permission bits, while the FUSE rung gives a view with synthesised metadata that accepts
+writes only when the backend does (see below). Rungs 1 and 2 work only on devices whose
+kernel has NFS support and whose su setup lets the mount land in the global namespace;
+rung 3 needs no NFS support in the kernel at all, only `/dev/fuse` and root — that is
+the whole reason it exists. One NFS implementation now backs both surfaces: the daemon
+carries no second client.
 
 A failure that exhausts the ladder is separated into the causes that need different
 fixes: no usable `su`; a kernel that cannot give us FUSE at all (`/dev/fuse` would not

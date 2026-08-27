@@ -62,6 +62,7 @@
     <string name="err_field_aux_gids">Extra groups must be up to 16 comma-separated numbers from 0 to 4294967295.</string>
     <string name="err_unreachable">Connection refused — is the NFS server up?</string>
     <string name="err_file_too_large">File exceeds the 64 MiB read limit of this provider.</string>
+    <string name="err_no_proxy_fd">This device cannot open share files for writing: its kernel does not provide the file bridge Android needs for it. Reading and creating files still work; for writes, try Filesystem mount (requires root).</string>
     <string name="err_generic">NFS error: %1$s</string>
     <string name="err_bad_display_name">Cannot use “%1$s” as a name on this share.</string>
     <string name="err_nfs_denied">The server refused: the configured user ID may not write here.</string>

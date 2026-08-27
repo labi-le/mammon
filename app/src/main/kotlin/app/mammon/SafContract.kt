@@ -4,6 +4,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract.Document
 import android.provider.DocumentsContract.Root
 import java.io.FileNotFoundException
+import java.io.IOException
 
 /**
  * Row flags. Optimistic by design: advisory by specification, and derivable only from a
@@ -160,4 +161,24 @@ internal fun NfsFailure.asSafException(message: String): Exception = when (this)
     is NfsFailure.OutOfSpace,
     is NfsFailure.Server,
     -> FileNotFoundException(message)
+}
+
+/**
+ * What a failed `openProxyFileDescriptor` owes the client.
+ *
+ * [FILE_ERROR] is the bridge failing to mount, being unmounted under this app, or the
+ * binder to the system server dying — the three the call declares as IOException, and
+ * where descriptor exhaustion arrives too. [NO_PROXY_FD] is the device unable to give this
+ * app a proxy descriptor at all — a property of the kernel, not of the export, so its
+ * message must describe the device rather than the share. [RETHROW] keeps everything
+ * else, a bug of ours in this open path included: one that read as a file error would be
+ * invisible. The proxy callback is not among them — it runs on its own looper, where the
+ * framework turns a failure into an errno reply instead.
+ */
+internal enum class ProxyOpenOutcome { FILE_ERROR, NO_PROXY_FD, RETHROW }
+
+internal fun Throwable.proxyOpenOutcome(): ProxyOpenOutcome = when (this) {
+    is IOException -> ProxyOpenOutcome.FILE_ERROR
+    is IllegalStateException -> ProxyOpenOutcome.NO_PROXY_FD
+    else -> ProxyOpenOutcome.RETHROW
 }

@@ -4,6 +4,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract.Document
 import android.provider.DocumentsContract.Root
 import java.io.FileNotFoundException
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -118,6 +119,39 @@ class SafContractTest {
         assertEquals(SafErrno.NOSPC, NfsFailure.OutOfSpace("x").safErrno())
         assertEquals(SafErrno.ROFS, NfsFailure.Unsupported("write").safErrno())
         assertEquals(SafErrno.IO, NfsFailure.Server("x").safErrno())
+    }
+
+    /**
+     * `openProxyFileDescriptor` needs a mount the framework makes per app, and a kernel
+     * that refuses it fails every write on the device rather than anything about this
+     * export. It arrives as IllegalStateException, which `openDocument` does not declare,
+     * so without this arm a client's `openOutputStream` sees an undeclared RuntimeException
+     * carrying a bare "Failed to mount" instead of a file error it can render.
+     */
+    @Test fun `a device that cannot give this app a proxy descriptor reads as a file error`() {
+        assertEquals(
+            ProxyOpenOutcome.NO_PROXY_FD,
+            IllegalStateException("Failed to mount").proxyOpenOutcome(),
+        )
+    }
+
+    /** The documented failure of that call, and the one already carrying a usable message. */
+    @Test fun `an io failure from the open still reads as a file error`() {
+        assertEquals(
+            ProxyOpenOutcome.FILE_ERROR,
+            IOException("Failed to mount proxy bridge").proxyOpenOutcome(),
+        )
+        assertEquals(ProxyOpenOutcome.FILE_ERROR, FileNotFoundException("gone").proxyOpenOutcome())
+    }
+
+    /**
+     * Translating these would hide a bug behind a file error: only the two cases above are
+     * the framework refusing the descriptor, and everything else is ours to answer for.
+     */
+    @Test fun `any other failure keeps its own type`() {
+        assertEquals(ProxyOpenOutcome.RETHROW, IllegalArgumentException("bad mode").proxyOpenOutcome())
+        assertEquals(ProxyOpenOutcome.RETHROW, NullPointerException().proxyOpenOutcome())
+        assertEquals(ProxyOpenOutcome.RETHROW, OutOfMemoryError().proxyOpenOutcome())
     }
 
     /** The row's MIME type is re-derived from the name, so the extension has to agree. */

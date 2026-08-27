@@ -289,11 +289,19 @@ class NfsDocumentsProvider : DocumentsProvider() {
             )
         } catch (e: Throwable) {
             runCatching { opened.file.close() }
-            throw if (e is IOException) FileNotFoundException(readableMessage(e)) else e
+            throw when (e.proxyOpenOutcome()) {
+                ProxyOpenOutcome.FILE_ERROR -> FileNotFoundException(readableMessage(e))
+                // Cause, not message: the framework's text is a bare "Failed to mount",
+                // which reads as this app's own Mount button and would otherwise render
+                // through err_generic as "NFS error: Failed to mount".
+                ProxyOpenOutcome.NO_PROXY_FD ->
+                    FileNotFoundException(context!!.getString(R.string.err_no_proxy_fd))
+                        .apply { initCause(e) }
+                ProxyOpenOutcome.RETHROW -> e
+            }
         }
         // Last, because it is the only step that destroys content: anything failing after
-        // it hands the client a refusal for a file already emptied. openProxyFileDescriptor
-        // itself throws IOException when the app has too many proxy fds registered.
+        // it hands the client a refusal for a file already emptied.
         if (open.truncate) {
             try {
                 nfsCall { access -> access.setAttributes(documentId, size = 0L) }

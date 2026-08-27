@@ -35,7 +35,13 @@ every `NfsFailure` case onto either `UnsupportedOperationException` (the framewo
 signal for an operation a provider does not have) or `FileNotFoundException` with a
 message a user can act on. Returning normally from a refused mutation is the one
 outcome that must never happen, because the system UI updates its model optimistically
-on a clean return.
+on a clean return. A server refusal is not the only way a write-mode open fails, so
+`proxyOpenOutcome` covers the other one: where the framework cannot give this app the
+proxy descriptor at all, its `IllegalStateException` becomes the declared
+`FileNotFoundException` with a message about the DEVICE, keeping the original as the
+cause. Only that one type is translated — a bug of ours in that open path keeps its
+type, since a bug reading as a file error is a bug nobody sees. The proxy callback
+cannot be caught there at all: it runs on its own looper.
 
 Writing forced a decision reads never did. AUTH_SYS carried a hardcoded uid 0, which is
 all a reader needs — `root_squash` is on by default on Linux exports, and a squashed
@@ -214,16 +220,29 @@ specified. The nodeid invalidation was proven there too: after an unlink and a r
 of the same name, `stat` reported a different inode and the new content, which is exactly
 the aliasing the node table's tombstone exists to prevent.
 
-The SAF write path has no evidence of its own on top of that. What was driven from a JVM
-host is the seam already proven above — the calls `createDocument`, `openDocument` and
-`deleteDocument` make, plus the one case the seam paragraph does not cover, REMOVE of a
-NON-empty directory raising `DirectoryNotEmpty`. The provider itself has never run
-anywhere: `openForWrite` needs `StorageManager.openProxyFileDescriptor` and an Android
-runtime, so the truncate-last ordering, the `createUnique` retry and the
-`ProxyFileDescriptorCallback` write loop are reasoned, not executed. `SafContractTest`
-pins only what needs neither a round trip nor that runtime — row flags, mode parsing,
-created names, and the failure and errno mappings. Nothing about writing is proven on a
-phone on either front end, and on the SAF side nothing above the seam is proven at all.
+The SAF write path now has runtime evidence, though not for the bytes. Running the
+released 0.7.0 APK in Waydroid (Android 13) against the same live NFSv4.1 export, the
+provider itself executed for the first time: DocumentsUI browsed the export root and
+listed children with the sizes and `FLAG_*` a foreign client actually sees,
+`ACTION_CREATE_DOCUMENT` created a file through the picker's own SAVE, the picker's New
+folder and a second app's `createDocument` created directories, `deleteDocument` removed
+a file, and `openForRead` streamed 3 MiB byte-exact by sha256 against the server. A
+create as a squashed uid 0 was refused with the mapped `FileNotFoundException` and
+nothing appeared on the server, while the identical call as the configured account
+succeeded — the flag and exception contract behaving as specified against a real client.
+
+What did NOT execute is everything past `openProxyFileDescriptor`. That call needs a
+per-app mount the framework asks vold for, and a kernel with no active SELinux LSM
+rejects it, because the mount options carry SELinux contexts nothing consumes. A second
+app calling `openProxyFileDescriptor` directly failed identically, so this is the image
+and not mammon. The truncate-last ordering and the `ProxyFileDescriptorCallback` write
+loop therefore remain reasoned, not executed; `createUnique` ran on every create above,
+but its collision retry was never driven and stays reasoned for that separate reason.
+`NO_PROXY_FD` is the arm that environment produces — unit-tested, but its message has
+never been read off a screen. `SafContractTest` pins only what needs neither a round
+trip nor that runtime. Nothing about writing BYTES is proven on a phone on either front
+end, and on the SAF side the JVM seam runs above remain the only evidence for the bytes a
+write would move.
 
 The end-to-end chain on a rooted Android phone — `su`, the kernel FUSE mount, and the
 inherited descriptor surviving `exec app_process` — is verified since v0.6.6 on one

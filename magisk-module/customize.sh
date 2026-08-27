@@ -1,7 +1,8 @@
 # shellcheck shell=sh
 SKIPUNZIP=0
 
-ui_print "- Mammon FS Loader v1.2"
+# Read, never retyped: a literal here froze at v1.0 once and at v1.2 again.
+ui_print "- $(sed -n 's/^name=//p' "$MODPATH/module.prop") $(sed -n 's/^version=//p' "$MODPATH/module.prop")"
 
 # Flash-time verdict: the same scan+load the boot scripts run later, so a
 # missing-candidate or refused-insmod situation is visible before first reboot.

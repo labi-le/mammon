@@ -7,7 +7,7 @@ Every step is recorded in `load.log`.
 
 ## Install
 
-1. Copy `mammon-fsloader-v1.2.zip` to the phone.
+1. Copy the `mammon-fsloader-v<version>.zip` release asset to the phone.
 2. Magisk app -> Modules -> Install from storage -> pick the zip.
 3. Reboot. During the flash itself the install console already shows whether
    any candidate modules were found and loaded (the app flash also writes this

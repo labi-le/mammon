@@ -76,6 +76,25 @@ internal object Fuse {
     const val DIRENT_HEADER_SIZE = 24
     const val KSTATFS_SIZE = 80
 
+    const val SETATTR_IN_SIZE = 88
+    const val CREATE_IN_SIZE = 16
+    const val MKDIR_IN_SIZE = 8
+    const val WRITE_IN_SIZE = 40
+    const val WRITE_OUT_SIZE = 8
+
+    /**
+     * A CREATE reply is two structs back to back, which the kernel spells as
+     * `out_numargs = 2` in `fuse_create_open`. Any other length is refused by
+     * `copy_out_args` and the open fails EIO, so the sum is named once here.
+     */
+    const val CREATE_OUT_SIZE = ENTRY_OUT_SIZE + OPEN_OUT_SIZE
+
+    const val FATTR_MODE = 1 shl 0
+    const val FATTR_SIZE = 1 shl 3
+    const val FATTR_MTIME = 1 shl 5
+    const val FATTR_FH = 1 shl 6
+    const val FATTR_MTIME_NOW = 1 shl 8
+
     const val INIT_FLAG_ASYNC_READ = 1 shl 0
     const val INIT_FLAG_BIG_WRITES = 1 shl 5
     const val INIT_FLAG_DO_READDIRPLUS = 1 shl 13
@@ -83,7 +102,11 @@ internal object Fuse {
     const val INIT_FLAG_MAX_PAGES = 1 shl 22
     const val INIT_FLAG_PARALLEL_DIROPS = 1 shl 18
 
-    /** Keeps the page cache across opens; a read-only export cannot invalidate it. */
+    /**
+     * Keeps the page cache across opens. Local writes go through that same cache and
+     * stay coherent with it; what this does not survive is another client changing the
+     * file, which [FuseNfsDaemon]'s attribute TTL bounds rather than prevents.
+     */
     const val FOPEN_KEEP_CACHE = 1 shl 1
 
     const val DT_UNKNOWN = 0
@@ -98,9 +121,13 @@ internal object Fuse {
     const val ENOENT = 2
     const val EIO = 5
     const val EBADF = 9
+    const val EACCES = 13
+    const val EEXIST = 17
     const val EINVAL = 22
+    const val ENOSPC = 28
     const val EROFS = 30
     const val ENOSYS = 38
+    const val ENOTEMPTY = 39
     const val EPROTO = 71
 
     const val PAGE_SIZE = 4096
@@ -125,22 +152,17 @@ internal object Fuse {
         return length
     }
 
-    /** Every opcode that would change the export, and so can only ever be refused. */
-    private val MUTATING = intArrayOf(
-        OP_SETATTR, OP_MKNOD, OP_MKDIR, OP_UNLINK, OP_RMDIR, OP_RENAME, OP_RENAME2,
-        OP_LINK, OP_SYMLINK, OP_WRITE, OP_CREATE, OP_FALLOCATE, OP_SETXATTR, OP_REMOVEXATTR,
-    )
-
     /**
-     * The errno an unserved opcode is refused with. EROFS states the real reason for a
-     * mutation, which is worth more to the caller than a blanket ENOSYS; READLINK is
-     * EINVAL because no symlink is ever listed, so the kernel is asking about something
-     * that cannot be one. Everything else is ENOSYS, which the kernel caches per
-     * connection and then stops asking about.
+     * The errno an opcode this daemon does not serve is refused with.
+     *
+     * ENOSYS rather than EROFS, now that the mount does carry writes: EROFS would be a
+     * false claim about the filesystem where ENOSYS is a true one about the operation.
+     * For RENAME2, FALLOCATE, SETXATTR and REMOVEXATTR the kernel additionally caches
+     * ENOSYS per connection and stops asking — MKNOD, LINK, SYMLINK and plain RENAME have
+     * no such flag, so for those it is simply the honest answer.
+     *
+     * READLINK is EINVAL because no symlink is ever listed, so the kernel is asking
+     * about something that cannot be one.
      */
-    fun refusal(opcode: Int): Int = when {
-        opcode in MUTATING -> EROFS
-        opcode == OP_READLINK -> EINVAL
-        else -> ENOSYS
-    }
+    fun refusal(opcode: Int): Int = if (opcode == OP_READLINK) EINVAL else ENOSYS
 }

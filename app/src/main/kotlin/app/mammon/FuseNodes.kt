@@ -12,10 +12,19 @@ import java.nio.ByteBuffer
  * nodeid as that inode number keeps `ls -i` agreeing with a later GETATTR, and the price
  * is that ids a listing merely allocated must be dropped by whoever opened the
  * directory. [releaseUnreferenced] is that drop.
+ *
+ * A removed name and a forgotten id are also separate, which is what [detach] exists
+ * for. The kernel may still hold references to a nodeid whose name UNLINK has just
+ * deleted, so the id has to outlive the name: it becomes a tombstone, [pathOf] stops
+ * answering, and the name is free for a fresh id. Skipping that step is not a missing
+ * feature but a correctness bug — a re-created name would resolve to the dead id, and
+ * the kernel would serve it out of the old inode's cache.
  */
 internal class NodeTable {
 
-    private class Node(val path: String) {
+    /** [path] is null once the name is gone: the id survives for the kernel's FORGET,
+     *  and is a var rather than a val so a later RENAME can re-key a subtree. */
+    private class Node(var path: String?) {
         var lookups = 0L
     }
 
@@ -30,6 +39,22 @@ internal class NodeTable {
     }
 
     fun pathOf(nodeid: Long): String? = synchronized(lock) { byId[nodeid]?.path }
+
+    /**
+     * Retires the name [path] so a later allocation of it gets a fresh id, keeping the
+     * tombstoned node alive while the kernel still holds references to it.
+     *
+     * [subtree] also retires every descendant name. UNLINK never needs it — a file has
+     * no descendants — while RMDIR does, because a listing may have interned children
+     * that would otherwise keep aliasing a re-created directory.
+     */
+    fun detach(path: String, subtree: Boolean) = synchronized(lock) {
+        retire(path)
+        if (subtree) {
+            val prefix = if (path.endsWith("/")) path else "$path/"
+            byPath.keys.filter { it.startsWith(prefix) }.forEach(::retire)
+        }
+    }
 
     /** Allocates an id without claiming a kernel reference. */
     fun intern(path: String): Long = synchronized(lock) { allocate(path) }
@@ -52,19 +77,38 @@ internal class NodeTable {
 
     fun releaseUnreferenced(nodeid: Long) = synchronized(lock) { evictIfUnreferenced(nodeid) }
 
-    /** Live entries, for tests: leaking ids is the failure mode this table can have. */
+    /** Every id still addressable by the kernel, tombstones included: leaking one is the
+     *  failure mode this table can have, and a tombstone leaks exactly as badly as a
+     *  live entry if its FORGET never arrives. */
     val size: Int get() = synchronized(lock) { byId.size }
 
     private fun allocate(path: String): Long =
         byPath.getOrPut(path) { next++.also { byId[it] = Node(path) } }
 
-    /** The root is never evicted: nothing can look it up again to get it back. */
+    /** The root keeps its name for the same reason it is never evicted: nothing can look
+     *  it up again, and an unbound root breaks every path in the mount. */
+    private fun retire(path: String) {
+        val nodeid = byPath[path] ?: return
+        if (nodeid == Fuse.ROOT_ID) return
+        byPath.remove(path)
+        byId[nodeid]?.path = null
+        evictIfUnreferenced(nodeid)
+    }
+
+    /**
+     * The root is never evicted: nothing can look it up again to get it back.
+     *
+     * The name is only dropped when it still points at THIS id. Today [retire] always
+     * nulls the path first, so the check cannot fire; it is here for the subtree re-key
+     * `Node.path` was made a var for, where a node keeps a live path another node may
+     * already have taken over. Without it that re-key would silently unbind a live name.
+     */
     private fun evictIfUnreferenced(nodeid: Long) {
         if (nodeid == Fuse.ROOT_ID) return
         val node = byId[nodeid] ?: return
         if (node.lookups > 0) return
         byId.remove(nodeid)
-        byPath.remove(node.path)
+        node.path?.let { if (byPath[it] == nodeid) byPath.remove(it) }
     }
 }
 

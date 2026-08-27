@@ -15,6 +15,7 @@ import org.dcache.nfs.v4.Stateids
 import org.dcache.nfs.v4.xdr.CLOSE4args
 import org.dcache.nfs.v4.xdr.COMPOUND4args
 import org.dcache.nfs.v4.xdr.COMPOUND4res
+import org.dcache.nfs.v4.xdr.GETATTR4args
 import org.dcache.nfs.v4.xdr.CREATE_SESSION4args
 import org.dcache.nfs.v4.xdr.OPEN4args
 import org.dcache.nfs.v4.xdr.SEQUENCE4args
@@ -181,7 +182,7 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         children.directoriesFirst()
     }
 
-    override fun openFile(docId: String): NfsFile = failing(docId) {
+    override fun openFile(docId: String): OpenedFile = failing(docId) {
         val path = requireNotNull(PathCodec.pathFor(docId))
         val res = try {
             compoundAt(path, "open") {
@@ -193,27 +194,46 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         }
         val attrs = Fattr4Codec.decode(lastOf(res, nfs_opnum4.OP_GETATTR).opgetattr.resok4.obj_attributes)
         if (attrs == null || !attrs.isRegular) throw NfsFailure.Server("not a regular file: $docId")
-        Handle(lastOf(res, nfs_opnum4.OP_GETFH).opgetfh.resok4.`object`)
+        OpenedFile(Handle(lastOf(res, nfs_opnum4.OP_GETFH).opgetfh.resok4.`object`), attrs.toNode())
     }
 
-    override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?) {
-        if (size == null && modifiedMillis == null) return
+    /**
+     * Both attributes ride one SETATTR, and SETATTR on the anonymous stateid needs no
+     * OPEN: setting the same size or time twice is the same result, so this keeps the
+     * full recovery set. SETATTR leaves the current filehandle alone, so the GETATTR
+     * after it reads back the object just set without a second walk.
+     */
+    override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?): NodeAttrs {
         val path = requireNotNull(PathCodec.pathFor(docId))
-        // Both attributes ride one SETATTR, and SETATTR on the anonymous stateid needs
-        // no OPEN: setting the same size or time twice is the same result, so this keeps
-        // the full recovery set.
-        failing(docId) {
-            compoundAt(path, "setattr", arrayOf(setattr(Fattr4Codec.encodeSetattr(size, modifiedMillis))))
+        if (size == null && modifiedMillis == null) {
+            return attrsAt(path)?.toNode() ?: throw NfsFailure.NotFound(docId)
+        }
+        return failing(docId) {
+            val res = compoundAt(
+                path,
+                "setattr",
+                arrayOf(setattr(Fattr4Codec.encodeSetattr(size, modifiedMillis)), getattr()),
+            )
+            decoded(res, docId)
         }
     }
 
-    /** The mode is nfs4j's, not ours: withMakedir hardcodes 0755, where a created file
-     *  gets [CREATE_MODE] from this file. */
-    override fun makeDirectory(parentDocId: String, name: String) {
+    /**
+     * The mode is nfs4j's, not ours: withMakedir hardcodes 0755, where a created file
+     * gets [CREATE_MODE] from this file.
+     *
+     * CREATE sets the current filehandle to the new directory, so the GETATTR rides the
+     * same COMPOUND and the caller's attributes cost no extra round trip.
+     */
+    override fun makeDirectory(parentDocId: String, name: String): NodeAttrs {
         val parent = requireNotNull(PathCodec.pathFor(parentDocId))
         val child = component(name)
-        failing("$parent/$child") {
-            compoundAt(parent, "mkdir", nonIdempotent = true) { withMakedir(child) }
+        return failing("$parent/$child") {
+            val res = compoundAt(parent, "mkdir", nonIdempotent = true) {
+                withMakedir(child)
+                withGetattr(*Fattr4Codec.REQUEST)
+            }
+            decoded(res, "$parent/$child")
         }
     }
 
@@ -238,15 +258,17 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
      * costs a lease, while a create reported as failed strands a file the caller will
      * then be told already exists.
      */
-    override fun createFile(parentDocId: String, name: String): NfsFile {
+    override fun createFile(parentDocId: String, name: String): CreatedFile {
         val parent = requireNotNull(PathCodec.pathFor(parentDocId))
         val child = component(name)
         return failing("$parent/$child") {
             val fused = closeBesideOpen
             val openOp = openCreate(child)
+            // OPEN leaves the new file as the current filehandle, so GETATTR reads it
+            // here rather than costing the caller a second walk from the export root.
             val tail =
-                if (fused) arrayOf(openOp, getfh(), closeOp(Stateids.currentStateId()))
-                else arrayOf(openOp, getfh())
+                if (fused) arrayOf(openOp, getfh(), getattr(), closeOp(Stateids.currentStateId()))
+                else arrayOf(openOp, getfh(), getattr())
             val res = compoundAt(
                 parent,
                 "create",
@@ -271,7 +293,7 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
                     resilient { inSession(compound("close") { withPutfh(fh); withClose(stateid, 0) }) }
                 }
             }
-            Handle(fh)
+            CreatedFile(Handle(fh), decoded(res, "$parent/$child"))
         }
     }
 
@@ -489,6 +511,12 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         return fresh
     }
 
+    /** The attributes from a GETATTR that rode another operation's COMPOUND. */
+    private fun decoded(res: COMPOUND4res, what: String): NodeAttrs =
+        Fattr4Codec.decode(lastOf(res, nfs_opnum4.OP_GETATTR).opgetattr.resok4.obj_attributes)
+            ?.toNode()
+            ?: throw NfsFailure.Server("nfs4 reply carries undecodable attributes: $what")
+
     /**
      * Maps the server's status onto the seam's failures, so no frontend parses prose.
      * Every status a frontend has to act on differently gets its own case: NOTEMPTY
@@ -606,8 +634,9 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         const val FORE_MAX_REQUESTS = 8
 
         /** SEQUENCE + PUTFH, plus the longest operation list any caller appends here
-         *  (OPEN + GETFH + CLOSE), so a batched LOOKUP walk cannot overrun the budget. */
-        const val OPS_AROUND_LOOKUPS = 5
+         *  (OPEN + GETFH + GETATTR + CLOSE), so a batched LOOKUP walk cannot overrun the
+         *  server's negotiated operation budget. */
+        const val OPS_AROUND_LOOKUPS = 6
 
         const val READDIR_DIR_COUNT = 32 * 1024
         const val READDIR_MAX_COUNT = 64 * 1024
@@ -650,6 +679,12 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
             requireNotNull(PathCodec.componentOf(name)) { "unusable name" }
 
         fun getfh(): nfs_argop4 = nfs_argop4().apply { argop = nfs_opnum4.OP_GETFH }
+
+        /** Hand-built because it has to follow a hand-built operation in the same tail. */
+        fun getattr(): nfs_argop4 = nfs_argop4().apply {
+            argop = nfs_opnum4.OP_GETATTR
+            opgetattr = GETATTR4args().apply { attr_request = bitmap4.of(*Fattr4Codec.REQUEST) }
+        }
 
         fun closeOp(stateid: stateid4): nfs_argop4 = nfs_argop4().apply {
             argop = nfs_opnum4.OP_CLOSE

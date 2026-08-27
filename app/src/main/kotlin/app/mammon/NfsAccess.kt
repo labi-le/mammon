@@ -77,11 +77,12 @@ class NfsAccess(target: NfsTarget) : ReadOnlyNfsSession {
         return children.directoriesFirst()
     }
 
-    override fun openFile(docId: String): NfsFile {
-        val f = fileFor(requireNotNull(PathCodec.pathFor(docId)))
-        if (!f.exists()) throw NfsFailure.NotFound(docId)
-        if (!f.isFile) throw NfsFailure.Server("not a regular file: $docId")
-        return Handle(f)
+    /** One GETATTR, where exists() plus isFile was two: both ask the same question. */
+    override fun openFile(docId: String): OpenedFile {
+        val path = requireNotNull(PathCodec.pathFor(docId))
+        val attrs = statPath(path) ?: throw NfsFailure.NotFound(docId)
+        if (attrs.type != NfsType.NFS_REG) throw NfsFailure.Server("not a regular file: $docId")
+        return OpenedFile(Handle(fileFor(path)), attrs.toNode())
     }
 
     /** One READ per call against a resolved handle; the server caps [len] at its rtmax. */

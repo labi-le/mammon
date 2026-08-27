@@ -19,10 +19,10 @@ fallback for servers that still publish rpcbind and mountd. An NFSv4-only server
 the common modern default — was invisible to mammon before that.
 
 `NfsSession` gained a mutating half — create, write, setattr, remove, mkdir — that the
-NFSv4.1 backend implements and the NFSv3 backend declines outright. Both front ends are
-still read-only: nothing consumes that half yet, and the seam exists first so a writable
-SAF surface and writable FUSE opcodes are each their own change rather than two clients
-growing their own NFS write paths. RENAME is deliberately absent from the seam.
+NFSv4.1 backend implements and the NFSv3 backend declines outright. The FUSE daemon
+consumes it; the SAF provider does not yet. Building the seam first is what let the two
+front ends land as separate changes rather than growing two NFS write paths. RENAME is
+deliberately absent from the seam, so neither front end offers it.
 
 Writing forced a decision reads never did. AUTH_SYS carried a hardcoded uid 0, which is
 all a reader needs — `root_squash` is on by default on Linux exports, and a squashed
@@ -44,7 +44,7 @@ v0.5.0 `RootMount` walks one three-rung ladder and stops at the first rung that 
 
 The status line names which backing landed, because the three are not interchangeable:
 the kernel rungs give a full POSIX mount carrying the server's own ownership and
-permission bits, while the FUSE rung gives a read-only view with synthesised metadata
+permission bits, while the FUSE rung gives a read-write view with synthesised metadata
 (see below). Rungs 1 and 2 work only on devices whose kernel has NFS support and whose
 su setup lets the mount land in the global namespace; rung 3 needs no NFS support in the
 kernel at all, only `/dev/fuse` and root — that is the whole reason it exists. One NFS
@@ -137,14 +137,39 @@ That is why B was finally built this way — it is history, not a live option.
 
 Every one of these is a deliberate narrowing, not a gap waiting on a fix:
 
-- **Read-only.** Every mutating FUSE opcode answers EROFS.
+- **A read-only backend answers EROFS, not ENOSYS.** The NFSv3 fallback implements no
+  mutation, and its refusals arrive at the daemon as one typed failure. That maps to
+  EROFS, matching what `open` for write and `access` already answer on such a mount, so
+  the errno describes the filesystem rather than claiming `mkdir` does not exist.
+- **No rename.** RENAME and RENAME2 answer ENOSYS, because the backend seam has no
+  rename and emulating one as copy-plus-delete would be neither atomic nor O(1).
+  MKNOD, LINK, SYMLINK, FALLOCATE and the xattr setters answer ENOSYS for the same
+  reason — not EROFS, which on a mount that does accept writes would be a false
+  statement about the filesystem rather than a true one about the operation.
 - **No real ownership or permission bits.** `NodeAttrs` carries only type, size and
-  mtime, so the daemon synthesises mode `0555` for directories and `0444` for files,
-  owned by uid 0 / gid 0 to match the mount's `user_id`/`group_id`.
+  mtime, so the daemon synthesises mode `0755` for directories and `0644` for files,
+  owned by uid 0 / gid 0 to match the mount's `user_id`/`group_id`. The mount carries no
+  `default_permissions`, so the kernel enforces none of it: the bits exist for userspace
+  that stats before acting, and the server is the only real authority. A SETATTR carrying
+  FATTR_MODE is accepted and ignored, because `cp -p` and every archive extractor send it
+  and refusing would break them.
+- **Write-through, never write-back.** FUSE_WRITEBACK_CACHE is deliberately not
+  negotiated: one `write(2)` becomes one WRITE becomes one committed NFS write, so a
+  failure is reported by the WRITE that caused it — which is where `write(2)` sees it —
+  and the daemon holds no dirty state to lose. That is also why FLUSH has nothing to
+  report, which matters because FLUSH's status is `close(2)`'s while RELEASE's is
+  discarded by the VFS.
+- **Appends race a remote writer.** The kernel resolves O_APPEND to an absolute offset
+  from its cached size, and attributes live for the 5 s TTL below, so a concurrent append
+  from another client inside that window is overwritten. Only close-to-open semantics
+  closes this.
 - **No symlinks or special files.** `NfsSession.list` does not surface them, so they are
   not listed, and READLINK answers EINVAL.
-- **No free-space figures.** `STATFS` reports zero blocks and zero inodes with `namelen`
-  255, because `NfsSession` has no FSSTAT.
+- **No real free-space figures.** `NfsSession` has no FSSTAT, so `STATFS` reports a
+  synthetic capacity rather than a measured one. It must not report zero: `cp`, `rsync`
+  and several file managers read free space before issuing a single write and would
+  refuse a copy the server would have accepted. The truthful answer stays on the write
+  path, where the server's own out-of-space arrives as ENOSPC.
 - **5 s attribute and directory-entry lifetimes.** That TTL is what collapses the
   GETATTR storm behind `ls -l`.
 - **Directory listings are snapshotted at OPENDIR**, so a change on the server appears
@@ -163,8 +188,20 @@ root_squash) by running the production classes out of this repository: MKDIR ref
 with NFS4ERR_ACCESS as uid 0 and accepted as the configured account, a GUARDED4
 create refusing a second create instead of truncating, a 2 MiB create/write/read
 round trip byte-exact by sha256, SETATTR of size and mtime read back exactly, and
-REMOVE of both a file and an empty directory. That evidence is host-to-server only:
-no front end consumes the write half, so nothing about writing is proven on a phone.
+REMOVE of both a file and an empty directory.
+
+The FUSE write surface on top of it is PROVEN the same way, one layer up: the production
+daemon mounted through the real kernel FUSE module on a Linux host, inside
+`unshare -Umr`, serving the same live export. Over that mount `mkdir`, a shell redirect
+creating and writing a file, `cp` of 3 MiB verified byte-exact by sha256 against the
+source, `cp -p`, truncate, `touch -d`, `rmdir` of a non-empty directory answering
+ENOTEMPTY, `ln -s` answering ENOSYS, and `df` reporting non-zero space all behaved as
+specified. The nodeid invalidation was proven there too: after an unlink and a re-create
+of the same name, `stat` reported a different inode and the new content, which is exactly
+the aliasing the node table's tombstone exists to prevent.
+
+That evidence is host-to-server only. Nothing about writing is proven on a phone, and the
+SAF provider does not consume the write half at all.
 
 The end-to-end chain on a rooted Android phone — `su`, the kernel FUSE mount, and the
 inherited descriptor surviving `exec app_process` — is verified since v0.6.6 on one

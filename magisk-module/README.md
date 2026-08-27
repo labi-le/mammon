@@ -50,14 +50,15 @@ network up) or right after you unlock post-reboot. If the wait runs out, the
 block's final `FAILED:` line says which condition never arrived: the spec
 (device stayed locked or no share configured) or the host (unreachable).
 Once both hold, the module opens `/dev/fuse`, mounts it at the saved
-mountpoint and launches the same read-only FUSE daemon the app's own Mount
-button uses — so automount works even on kernels with no NFS support at all.
+mountpoint and launches the same FUSE daemon the app's own Mount button
+uses — so automount works even on kernels with no NFS support at all.
 If something is already mounted at the target, the pass logs a clean skip
 instead. Everything lands in `load.log`; the final line of each block reads
 `MOUNTED:` / `SKIPPED:` / `FAILED:` with the reason.
 
-The mount is read-only like every mammon view; unmount by rebooting without
-the flag file or from the app's Unmount button.
+The mount is read-write, since it runs the same daemon as the app's own
+Mount button; renaming is the one thing it refuses. Unmount by rebooting
+without the flag file or from the app's Unmount button.
 
 ## Honest limitation
 

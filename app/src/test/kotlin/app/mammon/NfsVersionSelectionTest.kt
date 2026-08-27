@@ -20,7 +20,7 @@ class NfsVersionSelectionTest {
         override fun probeRoot(): NodeAttrs? = null
         override fun stat(docId: String): NodeAttrs? = null
         override fun list(docId: String): List<ChildEntry> = emptyList()
-        override fun openFile(docId: String): NfsFile = throw NfsFailure.NotFound(docId)
+        override fun openFile(docId: String): OpenedFile = throw NfsFailure.NotFound(docId)
         override fun close() { closed = true }
     }
 

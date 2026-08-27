@@ -62,6 +62,20 @@ sealed class NfsFailure(message: String) : IOException(message) {
     class Server(what: String) : NfsFailure(what)
 }
 
+/**
+ * A newly created file: the open handle and the attributes the same round trip returned.
+ * Both exist because every caller needs both — re-fetching the attributes would be a
+ * second walk from the export root for something the create already had in hand.
+ */
+data class CreatedFile(val file: NfsFile, val attributes: NodeAttrs)
+
+/**
+ * An opened file and the attributes its open already fetched. Both backends have to read
+ * the attributes anyway to reject a directory, so a caller that needs the size — a proxy
+ * fd seeding its length, say — gets it without a second round trip.
+ */
+data class OpenedFile(val file: NfsFile, val attributes: NodeAttrs)
+
 /** Everything one [NfsSession] is opened for: where the export is, and who we claim to be. */
 data class NfsTarget(val spec: ExportSpec, val identity: AuthIdentity)
 
@@ -116,17 +130,18 @@ interface NfsSession : Closeable {
      * Opens [docId]; throws when it is missing or not a regular file. The handle also
      * serves [NfsFile.writeAt] on a backend whose [implementsWrites] is true.
      */
-    fun openFile(docId: String): NfsFile
+    fun openFile(docId: String): OpenedFile
 
-    fun streamFor(docId: String): InputStream = NfsFileStream(openFile(docId))
+    fun streamFor(docId: String): InputStream = NfsFileStream(openFile(docId).file)
 
     /**
      * Creates [name] under [parentDocId] and returns it open, failing with
      * [NfsFailure.AlreadyExists] rather than truncating an existing file.
      */
-    fun createFile(parentDocId: String, name: String): NfsFile
+    fun createFile(parentDocId: String, name: String): CreatedFile
 
-    fun makeDirectory(parentDocId: String, name: String)
+    /** Returns the new directory's attributes, from the same round trip that made it. */
+    fun makeDirectory(parentDocId: String, name: String): NodeAttrs
 
     /**
      * Removes [name] under [parentDocId], whether a file or an empty directory: NFSv4
@@ -136,8 +151,12 @@ interface NfsSession : Closeable {
      */
     fun remove(parentDocId: String, name: String)
 
-    /** Sets whichever of [size] and [modifiedMillis] is non-null, in one round trip. */
-    fun setAttributes(docId: String, size: Long? = null, modifiedMillis: Long? = null)
+    /**
+     * Sets whichever of [size] and [modifiedMillis] is non-null and returns the
+     * attributes as they stand afterwards, all in one round trip. Setting neither is a
+     * plain read of them.
+     */
+    fun setAttributes(docId: String, size: Long? = null, modifiedMillis: Long? = null): NodeAttrs
 }
 
 /**
@@ -150,16 +169,16 @@ interface ReadOnlyNfsSession : NfsSession {
 
     override val implementsWrites: Boolean get() = false
 
-    override fun createFile(parentDocId: String, name: String): NfsFile =
+    override fun createFile(parentDocId: String, name: String): CreatedFile =
         throw NfsFailure.Unsupported("create")
 
-    override fun makeDirectory(parentDocId: String, name: String): Unit =
+    override fun makeDirectory(parentDocId: String, name: String): NodeAttrs =
         throw NfsFailure.Unsupported("mkdir")
 
     override fun remove(parentDocId: String, name: String): Unit =
         throw NfsFailure.Unsupported("remove")
 
-    override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?): Unit =
+    override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?): NodeAttrs =
         throw NfsFailure.Unsupported("setattr")
 }
 

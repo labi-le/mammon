@@ -39,7 +39,7 @@ object RootMount {
 
     /** What the FUSE rung needs from the app: the APK to put on the daemon's classpath
      *  and a file both sides can read, since the root shell cannot call back into us. */
-    data class FuseLaunch(val apkPath: String, val logPath: String)
+    data class FuseLaunch(val apkPath: String, val logPath: String, val identity: AuthIdentity)
 
     enum class State { MOUNTED, NOT_MOUNTED, UNKNOWN }
 
@@ -224,7 +224,7 @@ object RootMount {
             if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
             # app_process feeds leading dash-args to ART (unknown ones exit before main)
             # and parses --nice-name only between "/" and the class. Same in fslib.sh.
-            CLASSPATH=${quote(fuse.apkPath)} ${'$'}S app_process / --nice-name=app.mammon:fuse app.mammon.FuseDaemonKt 3 ${quote(host)} ${quote(port.toString())} ${quote(export)} </dev/null >>$log 2>&1 &
+            CLASSPATH=${quote(fuse.apkPath)} ${'$'}S app_process / --nice-name=app.mammon:fuse app.mammon.FuseDaemonKt 3 ${quote(host)} ${quote(port.toString())} ${quote(export)} ${quote(fuse.identity.toString())} </dev/null >>$log 2>&1 &
             D=${'$'}!
             i=0
             while [ ${'$'}i -lt $FUSE_READY_TICKS ]; do

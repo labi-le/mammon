@@ -7,7 +7,6 @@ import com.emc.ecs.nfsclient.nfs.io.Nfs3File
 import com.emc.ecs.nfsclient.nfs.nfs3.Nfs3
 import com.emc.ecs.nfsclient.network.NetMgr
 import com.emc.ecs.nfsclient.rpc.CredentialUnix
-import java.io.IOException
 import java.net.InetSocketAddress
 
 /**
@@ -19,11 +18,24 @@ import java.net.InetSocketAddress
  *
  * Every method blocks on network I/O: callers must stay off the main thread.
  */
-class NfsAccess(private val spec: ExportSpec) : NfsSession {
+class NfsAccess(target: NfsTarget) : NfsSession {
+
+    private val spec = target.spec
 
     // AUTH_NONE gets the MOUNT accepted and the first GETATTR refused with
     // NFS3ERR_ACCES on a stock Linux server; AUTH_SYS is what NfsV4Access sends too.
-    private val nfs = Nfs3(spec.host, spec.export, CredentialUnix(0, 0, null), RETRIES)
+    private val nfs = Nfs3(
+        spec.host,
+        spec.export,
+        with(target.identity) {
+            CredentialUnix(uid.toInt(), gid.toInt(), auxGids.mapTo(LinkedHashSet(), Long::toInt))
+        },
+        RETRIES,
+    )
+
+    /** Read-only: the mutating half of [NfsSession] is left at its refusing default,
+     *  because this backend exists as the fallback for servers too old for v4.1. */
+    override val supportsWrites = false
 
     override fun probeRoot(): NodeAttrs? {
         val root = nfs.newFile("/")
@@ -49,7 +61,8 @@ class NfsAccess(private val spec: ExportSpec) : NfsSession {
     override fun list(docId: String): List<ChildEntry> {
         val dirPath = requireNotNull(PathCodec.pathFor(docId))
         val dir = fileFor(dirPath)
-        if (!dir.exists() || !dir.isDirectory) throw IOException("not a directory")
+        if (!dir.exists()) throw NfsFailure.NotFound(docId)
+        if (!dir.isDirectory) throw NfsFailure.Server("not a directory: $docId")
 
         val children = ArrayList<ChildEntry>()
         var cookie = 0L
@@ -67,8 +80,8 @@ class NfsAccess(private val spec: ExportSpec) : NfsSession {
 
     override fun openFile(docId: String): NfsFile {
         val f = fileFor(requireNotNull(PathCodec.pathFor(docId)))
-        if (!f.exists()) throw IOException("no such file")
-        if (!f.isFile) throw IOException("not a regular file")
+        if (!f.exists()) throw NfsFailure.NotFound(docId)
+        if (!f.isFile) throw NfsFailure.Server("not a regular file: $docId")
         return Handle(f)
     }
 

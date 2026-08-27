@@ -18,6 +18,22 @@ it needs only TCP 2049, and NFSv3 (`NfsAccess`, over `com.emc.ecs:nfs-client`) i
 fallback for servers that still publish rpcbind and mountd. An NFSv4-only server —
 the common modern default — was invisible to mammon before that.
 
+`NfsSession` gained a mutating half — create, write, setattr, remove, mkdir — that the
+NFSv4.1 backend implements and the NFSv3 backend declines outright. Both front ends are
+still read-only: nothing consumes that half yet, and the seam exists first so a writable
+SAF surface and writable FUSE opcodes are each their own change rather than two clients
+growing their own NFS write paths. RENAME is deliberately absent from the seam.
+
+Writing forced a decision reads never did. AUTH_SYS carried a hardcoded uid 0, which is
+all a reader needs — `root_squash` is on by default on Linux exports, and a squashed
+reader can still read anything world-readable. A squashed writer can write nothing, so
+the identity became configuration: `AuthIdentity` is a real triple (uid, gid,
+supplementary gids), settable in the SAF card and persisted with host, export and port.
+Hardcoding a different number would be exactly as wrong, since the owning account
+differs per server, and the supplementary list is load-bearing rather than cosmetic — a
+tree owned by a secondary group is reachable only through it, so the credential encodes
+the whole `gids<16>` vector RFC 5531 allows instead of one copy of the primary gid.
+
 Directions A and B both sit behind the single Mount button on the root card. Since
 v0.5.0 `RootMount` walks one three-rung ladder and stops at the first rung that answers:
 

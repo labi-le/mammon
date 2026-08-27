@@ -18,7 +18,7 @@ nix-shell --run './gradlew :app:lintDebug'
 | `settings.gradle.kts` | Gradle settings; registers the `:app` module |
 | `build.gradle.kts` | Root build script; plugin versions |
 | `app/` | The single module: application code, manifest, resources |
-| `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFSv4.1 and NFSv3 session implementations behind one interface, the FUSE daemon serving that same interface, root-mount plumbing, prefs/spec parsing |
+| `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFSv4.1 and NFSv3 session implementations behind one interface, the FUSE daemon serving that same interface, root-mount plumbing, prefs/spec/identity parsing |
 | `app/src/main/res/` | Resources: M3 theme (`Theme.Mammon`), strings, adaptive launcher icons |
 | `app/build.gradle.kts` | Module build config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35 |
 | `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |
@@ -39,7 +39,9 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   configured export to any file manager. Two protocol versions sit behind the
   `NfsSession` interface and are chosen per export with no UI switch — NFSv4.1 over
   `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
-  as the fallback for servers that still run rpcbind and mountd.
+  as the fallback for servers that still run rpcbind and mountd. AUTH_SYS sends a
+  configured identity (uid, gid, supplementary gids), because root_squash — the export
+  default — maps uid 0 to nobody and refuses every write.
 - **Root option — one Mount button, three rungs** (directions A and B): `RootMount` tries
   kernel `mount -t nfs -o vers=4.2` through `su --mount-master`, then `vers=3`, then a
   pure-Kotlin FUSE daemon serving the same `NfsSession` the provider uses. A root shell
@@ -56,9 +58,12 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   treating it as generally working.
 
 Out of scope so far: provider-side writes/rename/delete, any write through FUSE,
-Kerberos/RPCSEC_GSS, pNFS layouts, NFSv4 delegations and byte-range locks, foreground
-services, boot receivers, caching layers. Boot-time automount of the saved share is
-owned by the companion module (v1.2, off by default behind a flag file), not the app.
+RENAME at any layer, Kerberos/RPCSEC_GSS, pNFS layouts, NFSv4 delegations and byte-range
+locks, foreground services, boot receivers, caching layers. The `NfsSession` seam itself
+is writable and the NFSv4.1 backend implements it (create, write, setattr, remove,
+mkdir); neither front end consumes it yet. Boot-time automount of the saved
+share is owned by the companion module (v1.2, off by default behind a flag file), not
+the app.
 
 ## Verification expectations
 

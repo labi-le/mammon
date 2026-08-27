@@ -37,6 +37,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hostEdit: TextInputEditText
     private lateinit var exportEdit: TextInputEditText
     private lateinit var portEdit: TextInputEditText
+    private lateinit var uidLayout: TextInputLayout
+    private lateinit var gidLayout: TextInputLayout
+    private lateinit var auxGidsLayout: TextInputLayout
+    private lateinit var uidEdit: TextInputEditText
+    private lateinit var gidEdit: TextInputEditText
+    private lateinit var auxGidsEdit: TextInputEditText
     private lateinit var mountpointEdit: TextInputEditText
 
     private lateinit var openButton: Button
@@ -61,6 +67,12 @@ class MainActivity : AppCompatActivity() {
         hostEdit = findViewById(R.id.host)
         exportEdit = findViewById(R.id.export)
         portEdit = findViewById(R.id.port)
+        uidLayout = findViewById(R.id.uid_layout)
+        gidLayout = findViewById(R.id.gid_layout)
+        auxGidsLayout = findViewById(R.id.aux_gids_layout)
+        uidEdit = findViewById(R.id.uid)
+        gidEdit = findViewById(R.id.gid)
+        auxGidsEdit = findViewById(R.id.aux_gids)
         mountpointEdit = findViewById(R.id.mountpoint)
         saveButton = findViewById(R.id.save)
         openButton = findViewById(R.id.open_files)
@@ -74,11 +86,19 @@ class MainActivity : AppCompatActivity() {
         hostEdit.setText(prefs.host)
         exportEdit.setText(prefs.export)
         if (prefs.port != ExportSpec.DEFAULT_PORT) portEdit.setText(prefs.port.toString())
+        with(prefs.identity) {
+            uidEdit.setText(uid.toString())
+            gidEdit.setText(gid.toString())
+            auxGidsEdit.setText(auxGids.joinToString(","))
+        }
         mountpointEdit.setText(prefs.lastMountpoint)
 
         bindClearOnType(hostLayout, hostEdit)
         bindClearOnType(exportLayout, exportEdit)
         bindClearOnType(portLayout, portEdit)
+        bindClearOnType(uidLayout, uidEdit)
+        bindClearOnType(gidLayout, gidEdit)
+        bindClearOnType(auxGidsLayout, auxGidsEdit)
         bindClearOnType(mountpointLayout, mountpointEdit)
         saveButton.setOnClickListener { onSave() }
         openButton.setOnClickListener { onOpenInFiles() }
@@ -112,27 +132,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun onSave() {
         var valid = true
+        fun reject(layout: TextInputLayout, message: Int) {
+            layout.error = getString(message)
+            valid = false
+        }
+
         val host = hostEdit.text?.toString()?.trim().orEmpty()
         val export = exportEdit.text?.toString()?.trim().orEmpty()
         val portStr = portEdit.text?.toString()?.trim().orEmpty()
-        if (host.isEmpty()) {
-            hostLayout.error = getString(R.string.err_field_host)
-            valid = false
-        }
-        if (!export.startsWith("/")) {
-            exportLayout.error = getString(R.string.err_field_export)
-            valid = false
-        }
+        if (host.isEmpty()) reject(hostLayout, R.string.err_field_host)
+        if (!export.startsWith("/")) reject(exportLayout, R.string.err_field_export)
         val port = when {
             portStr.isEmpty() -> ExportSpec.DEFAULT_PORT
-            else -> portStr.toIntOrNull()?.takeIf { it in 1..65535 } ?: run {
-                portLayout.error = getString(R.string.err_field_port)
-                valid = false
-                ExportSpec.DEFAULT_PORT
-            }
+            else -> portStr.toIntOrNull()?.takeIf { it in 1..MAX_PORT }
+                ?: ExportSpec.DEFAULT_PORT.also { reject(portLayout, R.string.err_field_port) }
         }
-        val canonical = "$host:$port:$export"
-        val spec = ExportSpec.parse(canonical)
+
+        val uid = AuthIdentity.idOrNull(uidEdit.text?.toString().orEmpty())
+        if (uid == null) reject(uidLayout, R.string.err_field_uid)
+        val gid = AuthIdentity.idOrNull(gidEdit.text?.toString().orEmpty())
+        if (gid == null) reject(gidLayout, R.string.err_field_gid)
+        val aux = AuthIdentity.auxOrNull(auxGidsEdit.text?.toString().orEmpty())
+        if (aux == null) reject(auxGidsLayout, R.string.err_field_aux_gids)
+
+        // A field the user was just told is wrong must not be written anyway: saving a
+        // coerced value is how a bad uid survives a visible complaint about it.
+        if (!valid || uid == null || gid == null || aux == null) {
+            status.setText(R.string.err_bad_config)
+            return
+        }
+        val spec = ExportSpec.parse("$host:$port:$export")
         if (spec == null) {
             exportLayout.error = getString(R.string.err_field_export)
             status.setText(R.string.err_bad_config)
@@ -141,6 +170,7 @@ class MainActivity : AppCompatActivity() {
         prefs.host = spec.host
         prefs.export = spec.export
         prefs.port = spec.port
+        prefs.identity = AuthIdentity(uid, gid, aux)
         status.text = getString(R.string.saved_ok, "${spec.host}:${spec.port}:${spec.export}")
         probeSavedConfig()
     }
@@ -150,7 +180,7 @@ class MainActivity : AppCompatActivity() {
      * generation counter discards results from superseded probes.
      */
     private fun probeSavedConfig() {
-        val spec = prefs.spec() ?: return
+        val target = prefs.target() ?: return
         val gen = PROBE_GENERATION.incrementAndGet()
         status.setText(R.string.probing)
         PROBE_IN_FLIGHT.set(true)
@@ -159,7 +189,7 @@ class MainActivity : AppCompatActivity() {
             val ok = try {
                 runBlocking {
                     withTimeout(PROBE_TIMEOUT_MS) {
-                        NfsSessions.open(spec).use { it.probeRoot() != null }
+                        NfsSessions.open(target).use { it.probeRoot() != null }
                     }
                 }
             } catch (_: Exception) {
@@ -221,7 +251,11 @@ class MainActivity : AppCompatActivity() {
                     spec.export,
                     spec.port,
                     mp,
-                    RootMount.FuseLaunch(applicationInfo.sourceDir, File(cacheDir, FUSE_LOG).path),
+                    RootMount.FuseLaunch(
+                        applicationInfo.sourceDir,
+                        File(cacheDir, FUSE_LOG).path,
+                        prefs.identity,
+                    ),
                 )
             } else {
                 RootMount.unmount(mp)
@@ -364,6 +398,10 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val AUTHORITY = "app.mammon.nfs"
         const val PROBE_TIMEOUT_MS = 15_000L
+
+        /** Mirrors what ExportSpec.parse accepts, so a rejected port and a rejected
+         *  spec cannot disagree. */
+        private const val MAX_PORT = 65535
 
         /** The log file name under cacheDir; the root shell writes where the app can still read. */
         private const val FUSE_LOG = "fuse-daemon.log"

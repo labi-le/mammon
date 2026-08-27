@@ -129,7 +129,7 @@ class RootMountScriptHygieneTest {
             "fuseMountScript" to
                 RootMount.fuseMountScript(
                     "192.0.2.1", "/export", 2049, mountpoint,
-                    RootMount.FuseLaunch("/data/app/base.apk", log),
+                    RootMount.FuseLaunch("/data/app/base.apk", log, AuthIdentity.DEFAULT),
                 ),
         )
     }

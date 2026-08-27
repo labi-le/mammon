@@ -31,12 +31,21 @@ object PathCodec {
         if (docId == ROOT_ID) ROOT_ID else docId.substringAfterLast('/')
 
     /**
-     * Export-absolute path of a directory entry, null for the dot names every
-     * readdir carries and for the empty name a malformed reply could carry.
+     * One directory entry name safe to send as a single NFS component: not empty, not a
+     * dot name, and carrying neither a separator nor a NUL. Mutating operations take a
+     * name rather than a path, so this is the only guard between a foreign display name
+     * and the wire.
+     */
+    fun componentOf(name: String?): String? =
+        name?.takeIf { it.isNotEmpty() && it != "." && it != ".." && '/' !in it && '\u0000' !in it }
+
+    /**
+     * Export-absolute path of a directory entry, null for the dot names every readdir
+     * carries and for any other name [componentOf] refuses.
      */
     fun childPath(parentPath: String, name: String?): String? {
-        if (name.isNullOrEmpty() || name == "." || name == "..") return null
-        return if (parentPath.endsWith("/")) parentPath + name else "$parentPath/$name"
+        val component = componentOf(name) ?: return null
+        return if (parentPath.endsWith("/")) parentPath + component else "$parentPath/$component"
     }
 
     fun isChild(parentDocId: String, docId: String): Boolean =

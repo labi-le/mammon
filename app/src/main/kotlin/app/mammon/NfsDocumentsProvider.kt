@@ -34,9 +34,9 @@ class NfsDocumentsProvider : DocumentsProvider() {
 
     override fun onCreate(): Boolean = true
 
-    private fun spec(): ExportSpec? {
+    private fun target(): NfsTarget? {
         val prefs = Prefs(context as Context)
-        return if (prefs.host.isBlank() || prefs.export.isBlank()) null else prefs.spec()
+        return if (prefs.host.isBlank() || prefs.export.isBlank()) null else prefs.target()
     }
 
     private fun <T> nfsCall(block: (NfsSession) -> T): T =
@@ -52,28 +52,28 @@ class NfsDocumentsProvider : DocumentsProvider() {
             }
         }
 
-    private var cachedAccess: Pair<ExportSpec, NfsSession>? = null
+    private var cachedAccess: Pair<NfsTarget, NfsSession>? = null
 
     private fun nfsInstance(): NfsSession {
-        val s = spec() ?: throw FileNotFoundException(context!!.getString(R.string.err_no_config))
+        val t = target() ?: throw FileNotFoundException(context!!.getString(R.string.err_no_config))
         synchronized(this) {
-            cachedAccess?.let { (spec, session) -> if (spec == s) return session }
+            cachedAccess?.let { (target, session) -> if (target == t) return session }
         }
         // Built OUTSIDE the monitor on purpose: opening a session does real network
         // I/O (a v4.1 EXCHANGE_ID/CREATE_SESSION handshake, or v3 portmap + mountd +
         // LOOKUP), so holding the lock through it would park every other SAF call
         // uninterruptibly past their withTimeout. Two threads missing at once
         // therefore build concurrently; only the compare-and-swap is serialized.
-        val candidate = NfsSessions.open(s)
+        val candidate = NfsSessions.open(t)
         synchronized(this) {
-            cachedAccess?.let { (spec, session) ->
-                if (spec == s) {
+            cachedAccess?.let { (target, session) ->
+                if (target == t) {
                     runCatching { candidate.close() }
                     return session
                 }
                 runCatching { session.close() }
             }
-            cachedAccess = s to candidate
+            cachedAccess = t to candidate
             return candidate
         }
     }
@@ -81,7 +81,7 @@ class NfsDocumentsProvider : DocumentsProvider() {
     override fun queryRoots(projection: Array<out String>?): Cursor {
         val cols = projection ?: DEFAULT_ROOT_PROJECTION
         val out = MatrixCursor(cols)
-        val s = spec()
+        val s = target()?.spec
         if (s != null) {
             out.newRow().apply {
                 add(DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_ID)
@@ -114,7 +114,7 @@ class NfsDocumentsProvider : DocumentsProvider() {
         val cols = projection ?: DEFAULT_DOC_PROJECTION
         val out = MatrixCursor(cols)
         if (documentId == PathCodec.ROOT_ID) {
-            spec()?.let { s ->
+            target()?.spec?.let { s ->
                 out.newRow().apply {
                     add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, PathCodec.ROOT_ID)
                     add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, s.exportTail)

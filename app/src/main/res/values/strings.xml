@@ -7,6 +7,9 @@
     <string name="hint_host">Server host or IP</string>
     <string name="hint_export">Export path, e.g. /export/data</string>
     <string name="hint_port">Port (default 2049)</string>
+    <string name="hint_uid">User ID on the server (uid)</string>
+    <string name="hint_gid">Group ID on the server (gid)</string>
+    <string name="hint_aux_gids">Extra group IDs, comma-separated</string>
     <string name="save">Save</string>
     <string name="open_files">Open in Files</string>
     <string name="saved_ok">Saved: %1$s</string>
@@ -54,6 +57,9 @@
     <string name="err_field_host">Enter the server host or IP.</string>
     <string name="err_field_export">Enter an export path starting with /.</string>
     <string name="err_field_port">Port must be 1–65535.</string>
+    <string name="err_field_uid">User ID must be a whole number from 0 to 4294967295.</string>
+    <string name="err_field_gid">Group ID must be a whole number from 0 to 4294967295.</string>
+    <string name="err_field_aux_gids">Extra groups must be up to 16 comma-separated numbers from 0 to 4294967295.</string>
     <string name="err_unreachable">Connection refused — is the NFS server up?</string>
     <string name="err_file_too_large">File exceeds the 64 MiB read limit of this provider.</string>
     <string name="err_generic">NFS error: %1$s</string>

@@ -17,18 +17,19 @@ class NfsVersionSelectionTest {
 
     private class Fake : NfsSession {
         var closed = false
+        override val supportsWrites = false
         override fun probeRoot(): NodeAttrs? = null
         override fun stat(docId: String): NodeAttrs? = null
         override fun list(docId: String): List<ChildEntry> = emptyList()
-        override fun openFile(docId: String): NfsFile = throw IOException("no such file")
+        override fun openFile(docId: String): NfsFile = throw NfsFailure.NotFound(docId)
         override fun close() { closed = true }
     }
 
-    private val spec = ExportSpec("192.0.2.1", "/export", 2049)
+    private val target = NfsTarget(ExportSpec("192.0.2.1", "/export", 2049), AuthIdentity.DEFAULT)
 
     @Test fun `v4 wins and v3 is never opened`() {
         val v4 = Fake()
-        val picked = NfsSessions.select(spec, { v4 }, { fail("v3 must not be opened"); error("unreachable") })
+        val picked = NfsSessions.select(target, { v4 }, { fail("v3 must not be opened"); error("unreachable") })
         assertSame(v4, picked)
         assertFalse(v4.closed)
     }
@@ -36,7 +37,7 @@ class NfsVersionSelectionTest {
     @Test fun `a v3 only server falls through to v3`() {
         val v3 = Fake()
         val picked = NfsSessions.select(
-            spec,
+            target,
             { throw IOException("rpc program mismatch") },
             { v3 },
         )
@@ -46,28 +47,28 @@ class NfsVersionSelectionTest {
     @Test fun `a v4 stack that cannot load falls through to v3`() {
         val v3 = Fake()
         val picked = NfsSessions.select(
-            spec,
+            target,
             { throw NoClassDefFoundError("org/glassfish/grizzly/Grizzly") },
             { v3 },
         )
         assertSame(v3, picked)
     }
 
-    @Test fun `the spec reaches both attempts unchanged`() {
-        val seen = ArrayList<ExportSpec>()
+    @Test fun `the target reaches both attempts unchanged`() {
+        val seen = ArrayList<NfsTarget>()
         NfsSessions.select(
-            spec,
+            target,
             { seen += it; throw IOException("no v4") },
             { seen += it; Fake() },
         )
-        assertEquals(listOf(spec, spec), seen)
+        assertEquals(listOf(target, target), seen)
     }
 
     @Test fun `both failing reports the v3 error and keeps the v4 one`() {
         val v4Failure = IOException("exchange_id refused")
         val v3Failure = IOException("portmap unreachable")
         try {
-            NfsSessions.select(spec, { throw v4Failure }, { throw v3Failure })
+            NfsSessions.select(target, { throw v4Failure }, { throw v3Failure })
             fail("expected the v3 failure")
         } catch (e: IOException) {
             assertSame(v3Failure, e)
@@ -78,7 +79,7 @@ class NfsVersionSelectionTest {
     @Test fun `a cancelled v4 probe is not a protocol failure`() {
         try {
             NfsSessions.select(
-                spec,
+                target,
                 { throw CancellationException("timed out") },
                 { fail("v3 must not be opened"); error("unreachable") },
             )

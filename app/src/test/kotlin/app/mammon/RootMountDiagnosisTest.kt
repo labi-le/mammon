@@ -323,7 +323,7 @@ class RootMountDiagnosisTest {
 
     @Test fun `every fuse exit that classifies emits the dump first`() {
         val script = RootMount.fuseMountScript(
-            "192.0.2.1", "/export", 2049, "/mnt/nas", RootMount.FuseLaunch("/data/app/apk", "/cache/l"),
+            "192.0.2.1", "/export", 2049, "/mnt/nas", RootMount.FuseLaunch("/data/app/apk", "/cache/l", AuthIdentity.DEFAULT),
         )
 
         // The refused exit dumps before exiting; the silent/unresponsive teardowns

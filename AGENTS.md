@@ -59,11 +59,12 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   exhausts the ladder is separated into no usable `su`, a kernel that cannot give us
   FUSE, module files present but nothing registered, a FUSE mount whose daemon never
   served, and everything else. The FUSE view carries writes — create, write, truncate,
-  set-mtime, mkdir, unlink and rmdir — with uid/gid 0 and synthesised `0755`/`0644`
-  modes; rename is the one namespace operation it does not serve. The daemon is proven against a real export on a
-  Linux host, and the end-to-end root chain on a phone is verified since v0.6.6 on one
-  real device (Android 16, KernelSU-Next) — see the guide's Verification status before
-  treating it as generally working.
+  set-mtime, mkdir, unlink and rmdir — when the backend implements them, which means an
+  NFSv4.1 server; against an NFSv3-only export every mutation answers EROFS. Files carry
+  uid/gid 0 and synthesised `0755`/`0644` modes, and rename is never served. The daemon
+  is proven against a real export on a Linux host, and the end-to-end root chain on a
+  phone is verified since v0.6.6 on one real device (Android 16, KernelSU-Next) — see
+  the guide's Verification status before treating it as generally working.
 
 Out of scope so far: RENAME at any layer,
 Kerberos/RPCSEC_GSS, pNFS layouts, NFSv4 delegations and byte-range locks, foreground

@@ -50,4 +50,38 @@ class PathCodecTest {
         // ids that never resolve are not children of anything
         assertFalse(PathCodec.isChild("a", ".."))
     }
+
+    @Test fun `parentOf walks up and stops at the export root`() {
+        assertNull(PathCodec.parentOf(PathCodec.ROOT_ID))
+        assertEquals(PathCodec.ROOT_ID, PathCodec.parentOf("a"))
+        assertEquals("a", PathCodec.parentOf("a/b"))
+        assertEquals("a/b", PathCodec.parentOf("a/b/c.txt"))
+    }
+
+    /**
+     * deleteDocument splits an id into parent plus name, so an id this refuses is one
+     * that never reaches NFS as a pair that only the backend would reject.
+     */
+    @Test fun `parentOf refuses an id that does not resolve`() {
+        assertNull(PathCodec.parentOf(""))
+        assertNull(PathCodec.parentOf("a/"))
+        assertNull(PathCodec.parentOf("/a"))
+        assertNull(PathCodec.parentOf("a//b"))
+        assertNull(PathCodec.parentOf("a/../b"))
+        assertNull(PathCodec.parentOf(".."))
+    }
+
+    /** A mutation takes a parent plus a name, so this is where a hostile name stops. */
+    @Test fun `childDocId refuses anything that is not one component`() {
+        assertNull(PathCodec.childDocId(PathCodec.ROOT_ID, "a/b"))
+        assertNull(PathCodec.childDocId(PathCodec.ROOT_ID, ".."))
+        assertNull(PathCodec.childDocId(PathCodec.ROOT_ID, ""))
+        assertNull(PathCodec.childDocId(PathCodec.ROOT_ID, null))
+        assertNull(PathCodec.childDocId("..", "x"))
+    }
+
+    @Test fun `childDocId builds ids under the root and under a directory`() {
+        assertEquals("a", PathCodec.childDocId(PathCodec.ROOT_ID, "a"))
+        assertEquals("a/b/c", PathCodec.childDocId("a/b", "c"))
+    }
 }

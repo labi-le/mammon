@@ -31,6 +31,22 @@ object PathCodec {
         if (docId == ROOT_ID) ROOT_ID else docId.substringAfterLast('/')
 
     /**
+     * documentId of the containing directory; null for the export root, which has none,
+     * and null for an id [pathFor] refuses, so a split id cannot reach NFS unvalidated.
+     */
+    fun parentOf(docId: String): String? = when {
+        docId == ROOT_ID || pathFor(docId) == null -> null
+        '/' !in docId -> ROOT_ID
+        else -> docId.substringBeforeLast('/')
+    }
+
+    /** documentId of [name] inside [parentDocId], null when either is unusable. */
+    fun childDocId(parentDocId: String, name: String?): String? {
+        val parentPath = pathFor(parentDocId) ?: return null
+        return childPath(parentPath, name)?.let(::docIdFor)
+    }
+
+    /**
      * One directory entry name safe to send as a single NFS component: not empty, not a
      * dot name, and carrying neither a separator nor a NUL. Mutating operations take a
      * name rather than a path, so this is the only guard between a foreign display name

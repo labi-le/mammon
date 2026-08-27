@@ -31,17 +31,24 @@ nix-shell --run './gradlew :app:lintDebug'
 
 ## Current intent
 
-mammon is an Android app for reading NFS storage on a device, inspired by
+mammon is an Android app for reading and writing NFS storage on a device, inspired by
 [bobrofon/easysshfs](https://github.com/bobrofon/easysshfs). v0.5.0 implements all three
 directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 
-- **Primary — rootless SAF browsing** (direction C): `NfsDocumentsProvider` exposes the
-  configured export to any file manager. Two protocol versions sit behind the
+- **Primary — rootless SAF access** (direction C): `NfsDocumentsProvider` exposes the
+  configured export to any file manager, readable and writable — create, delete and
+  write-mode `openDocument` through `StorageManager.openProxyFileDescriptor`, so a
+  server refusal reaches the writer's own `write(2)` instead of a log line after its fd
+  is gone. Row flags are optimistic by design and the exception a mutation throws is the
+  real contract; rename is the one operation withheld, since the seam has no RENAME. Two
+  protocol versions sit behind the
   `NfsSession` interface and are chosen per export with no UI switch — NFSv4.1 over
   `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
-  as the fallback for servers that still run rpcbind and mountd. AUTH_SYS sends a
+  as the fallback for servers that still run rpcbind and mountd. The NFSv3 backend is
+  read-only, so its rows advertise no writes at all. AUTH_SYS sends a
   configured identity (uid, gid, supplementary gids), because root_squash — the export
-  default — maps uid 0 to nobody and refuses every write.
+  default — maps uid 0 to nobody and refuses every write. There is no "allow writes"
+  toggle and never will be: writability is a property of the server, not of a setting.
 - **Root option — one Mount button, three rungs** (directions A and B): `RootMount` tries
   kernel `mount -t nfs -o vers=4.2` through `su --mount-master`, then `vers=3`, then a
   pure-Kotlin FUSE daemon serving the same `NfsSession` the provider uses. A root shell
@@ -58,11 +65,11 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   real device (Android 16, KernelSU-Next) — see the guide's Verification status before
   treating it as generally working.
 
-Out of scope so far: provider-side writes/rename/delete, RENAME at any layer,
+Out of scope so far: RENAME at any layer,
 Kerberos/RPCSEC_GSS, pNFS layouts, NFSv4 delegations and byte-range locks, foreground
 services, boot receivers, caching layers. The `NfsSession` seam is writable, the NFSv4.1
-backend implements it (create, write, setattr, remove, mkdir) and the FUSE daemon
-consumes it; the SAF provider does not yet. Boot-time automount of the saved
+backend implements it (create, write, setattr, remove, mkdir) and both front ends now
+consume it. Boot-time automount of the saved
 share is owned by the companion module (v1.2, off by default behind a flag file), not
 the app.
 

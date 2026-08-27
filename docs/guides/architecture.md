@@ -10,7 +10,7 @@
 All three directions below are now shipped. Direction C — the rootless
 DocumentsProvider — was PICKED on 2026-08-24 and remains the primary way mammon exposes
 NFS storage: the configured export shows up in any SAF file manager through
-`NfsDocumentsProvider` (authority `app.mammon.nfs`), read-only.
+`NfsDocumentsProvider` (authority `app.mammon.nfs`), readable and writable.
 Since v0.4.0 that provider speaks two protocol versions behind one `NfsSession`
 interface, chosen per export with no UI switch: NFSv4.1 (`NfsV4Access`, over
 `org.dcache:nfs4j-core` XDR and `org.dcache:oncrpc4j-core` RPC) is tried first because
@@ -19,10 +19,22 @@ fallback for servers that still publish rpcbind and mountd. An NFSv4-only server
 the common modern default — was invisible to mammon before that.
 
 `NfsSession` gained a mutating half — create, write, setattr, remove, mkdir — that the
-NFSv4.1 backend implements and the NFSv3 backend declines outright. The FUSE daemon
-consumes it; the SAF provider does not yet. Building the seam first is what let the two
-front ends land as separate changes rather than growing two NFS write paths. RENAME is
+NFSv4.1 backend implements and the NFSv3 backend declines outright. Both front ends now
+consume it. Building the seam first is what let them land as separate changes rather
+than growing two NFS write paths. RENAME is
 deliberately absent from the seam, so neither front end offers it.
+
+On the SAF side the consequence worth knowing is that a row's `FLAG_*` is advisory by
+specification: deriving it honestly would need an NFSv4 ACCESS per listed child, which
+is one extra operation in an existing COMPOUND on v4 but a separate RPC per child on v3
+— exactly the storm `NfsAccess` documents having removed — and the RFC calls the answer
+advisory anyway. So flags are optimistic, gated only on which backend implements writes
+at all, and the exception each mutation throws is the contract: `SafContract.kt` maps
+every `NfsFailure` case onto either `UnsupportedOperationException` (the framework's own
+signal for an operation a provider does not have) or `FileNotFoundException` with a
+message a user can act on. Returning normally from a refused mutation is the one
+outcome that must never happen, because the system UI updates its model optimistically
+on a clean return.
 
 Writing forced a decision reads never did. AUTH_SYS carried a hardcoded uid 0, which is
 all a reader needs — `root_squash` is on by default on Linux exports, and a squashed

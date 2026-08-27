@@ -63,4 +63,11 @@
     <string name="err_unreachable">Connection refused — is the NFS server up?</string>
     <string name="err_file_too_large">File exceeds the 64 MiB read limit of this provider.</string>
     <string name="err_generic">NFS error: %1$s</string>
+    <string name="err_bad_display_name">Cannot use “%1$s” as a name on this share.</string>
+    <string name="err_nfs_denied">The server refused: the configured user ID may not write here.</string>
+    <string name="err_nfs_missing">That item is no longer on the server.</string>
+    <string name="err_nfs_exists">Something with that name already exists on the server.</string>
+    <string name="err_nfs_not_empty">The folder is not empty — delete what is inside it first.</string>
+    <string name="err_nfs_no_space">The server has no space left.</string>
+    <string name="err_nfs_read_only">This share is connected over NFSv3, which Mammon cannot write to.</string>
 </resources>

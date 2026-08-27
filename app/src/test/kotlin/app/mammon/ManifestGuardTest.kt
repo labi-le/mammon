@@ -17,22 +17,7 @@ import org.w3c.dom.Element
 class ManifestGuardTest {
     @Test
     fun nfsProviderRequiresManageDocuments() {
-        val manifest = File("src/main/AndroidManifest.xml")
-        assertTrue("manifest not found at ${manifest.absolutePath}", manifest.isFile)
-
-        val factory = DocumentBuilderFactory.newInstance()
-        factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
-        val doc = factory.newDocumentBuilder().parse(manifest)
-
-        val providers = doc.getElementsByTagName("provider")
-        val ours = (0 until providers.length)
-            .map(providers::item)
-            .filterIsInstance<Element>()
-            .filter { it.getAttribute("android:name").let { n -> n == ".NfsDocumentsProvider" || n == "app.mammon.NfsDocumentsProvider" } }
-
-        assertEquals("expected exactly one NfsDocumentsProvider declaration", 1, ours.size)
-
-        val permission = ours.single().getAttribute("android:permission")
+        val permission = nfsProvider().getAttribute("android:permission")
         assertEquals(
             "provider must carry android:permission=android.permission.MANAGE_DOCUMENTS",
             "android.permission.MANAGE_DOCUMENTS",
@@ -41,11 +26,24 @@ class ManifestGuardTest {
     }
 
     /**
-     * Packaging invariant: the module hand-off provider must stay unexported. An
-     * exported FileProvider would serve any cached file to every app on the device.
+     * Every post-mutation notifyChange URI is built from SAF_AUTHORITY. Drift from the
+     * declaration makes each refresh land on an authority nothing serves, and the only
+     * symptom is a stale listing.
      */
     @Test
-    fun moduleFileProviderStaysUnexported() {
+    fun nfsProviderAuthorityMatchesTheNotifyConstant() {
+        assertEquals(
+            "SAF_AUTHORITY must equal the declared android:authorities",
+            SAF_AUTHORITY,
+            nfsProvider().getAttribute("android:authorities"),
+        )
+    }
+
+    private fun nfsProvider(): Element = providersNamed {
+        it == ".NfsDocumentsProvider" || it == "app.mammon.NfsDocumentsProvider"
+    }
+
+    private fun providersNamed(matches: (String) -> Boolean): Element {
         val manifest = File("src/main/AndroidManifest.xml")
         assertTrue("manifest not found at ${manifest.absolutePath}", manifest.isFile)
 
@@ -57,11 +55,19 @@ class ManifestGuardTest {
         val ours = (0 until providers.length)
             .map(providers::item)
             .filterIsInstance<Element>()
-            .filter { it.getAttribute("android:name").contains("FileProvider") }
+            .filter { matches(it.getAttribute("android:name")) }
 
-        assertEquals("expected exactly one FileProvider declaration", 1, ours.size)
+        assertEquals("expected exactly one matching provider declaration", 1, ours.size)
+        return ours.single()
+    }
 
-        val provider = ours.single()
+    /**
+     * Packaging invariant: the module hand-off provider must stay unexported. An
+     * exported FileProvider would serve any cached file to every app on the device.
+     */
+    @Test
+    fun moduleFileProviderStaysUnexported() {
+        val provider = providersNamed { it.contains("FileProvider") }
         assertEquals(
             "FileProvider must not be exported",
             "false",

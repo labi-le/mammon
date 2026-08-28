@@ -20,8 +20,8 @@ android {
         applicationId = "app.mammon"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.7.1"
+        versionCode = 21
+        versionName = "0.8.0"
     }
 
     // Local releases sign when keystore.properties exists; absent file keeps them unsigned (CI parity).
@@ -77,9 +77,18 @@ val packModuleZip = tasks.register<Zip>("packModuleZip") {
     destinationDirectory.set(temporaryDir)
 }
 
-// The unit test reads the real zip, not a fixture, so the zip-root layout stays tested.
+// The unit tests read the real zip and the real fslib.sh, not fixtures, so the zip-root
+// layout and the shell half of the app/module pair stay tested.
 tasks.withType<Test>().configureEach {
     dependsOn(packModuleZip)
+    // A systemProperty makes the path an input, never its bytes: without these an
+    // fslib.sh or zip edit left this task UP-TO-DATE and shell mutations read green.
+    inputs.file(packModuleZip.flatMap { it.archiveFile })
+        .withPropertyName("moduleZip")
+        .withPathSensitivity(PathSensitivity.NONE)
+    inputs.file(rootProject.file("magisk-module/fslib.sh"))
+        .withPropertyName("fslibScript")
+        .withPathSensitivity(PathSensitivity.NONE)
     systemProperty("mammon.moduleZip", packModuleZip.flatMap { it.archiveFile }.get().asFile.absolutePath)
     systemProperty("mammon.fslib", rootProject.file("magisk-module/fslib.sh").absolutePath)
 }

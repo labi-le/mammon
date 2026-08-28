@@ -35,6 +35,10 @@ object RootMount {
 
         /** The nfs/nfs4/fuse type found at the mountpoint, or null when nothing is mounted. */
         val fsType: String? = null,
+
+        /** Non-null only for a mount routed through shared storage: the path the user can
+         *  browse, as opposed to the master path the mount is really made at. */
+        val appVisible: String? = null,
     )
 
     /** What the FUSE rung needs from the app: the APK to put on the daemon's classpath
@@ -43,7 +47,25 @@ object RootMount {
 
     enum class State { MOUNTED, NOT_MOUNTED, UNKNOWN }
 
-    enum class MountDiagnosis { NO_ROOT, KERNEL_LACKS_FUSE, MODULE_FILES_PRESENT, FUSE_DAEMON_FAILED, GENERIC }
+    enum class MountDiagnosis {
+        NO_ROOT,
+        KERNEL_LACKS_FUSE,
+        MODULE_FILES_PRESENT,
+        FUSE_DAEMON_FAILED,
+
+        /** This device's emulated view has no shared peer, so no path exists where a
+         *  mount would become visible to apps. */
+        EMULATED_NO_SHARED_PEER,
+
+        /** The mount landed on the master path, the kernel never replicated it into the
+         *  view the user was promised, and it was removed again. */
+        EMULATED_NOT_PROPAGATED,
+
+        /** Same, except the removal failed, so a mount no app can see is still standing
+         *  at the master path. */
+        EMULATED_NOT_PROPAGATED_STUCK,
+        GENERIC,
+    }
 
     /** How far the FUSE rung got, or null when the ladder never reached it. */
     internal enum class FuseOutcome { NO_DEVICE, MOUNT_REFUSED, DAEMON_SILENT, MOUNT_UNRESPONSIVE, FAILED }
@@ -70,11 +92,10 @@ object RootMount {
 
     /** The exact mountpoint entry drives unmount verdicts; only mammon's own fs types
      *  fill [fsType], so the UI names backings it actually created. */
-    private fun mountSnapshot(mountpoint: String, mountsText: String?): MountSnapshot {
-        val text = mountsText.orEmpty()
-        if (text.isBlank()) return MountSnapshot(State.UNKNOWN, null, false)
+    private fun mountSnapshot(mountpoint: String, entries: List<MountEntry>?): MountSnapshot {
+        if (entries == null) return MountSnapshot(State.UNKNOWN, null, false)
         var hasExactEntry = false
-        for (entry in MountsParser.parse(text)) {
+        for (entry in entries) {
             if (entry.mountPoint != mountpoint) continue
             hasExactEntry = true
             if (entry.fsType in MOUNTED_FS_TYPES) {
@@ -84,27 +105,180 @@ object RootMount {
         return MountSnapshot(State.NOT_MOUNTED, null, hasExactEntry)
     }
 
+    private fun mountSnapshot(mountpoint: String, mountsText: String?): MountSnapshot =
+        mountSnapshot(mountpoint, entries(mountsText))
+
+    /** Null keeps a blank or unreadable capture from reading as "nothing is mounted";
+     *  a verdict asking about two paths parses the text once and scans the list twice. */
+    private fun entries(mountsText: String?): List<MountEntry>? =
+        mountsText?.takeIf { it.isNotBlank() }?.let { MountsParser.parse(it) }
+
     /** Kept for tests and diagnostics; unprivileged view, NOT namespace-consistent. */
     fun readOwnNamespaceMounts(): List<MountEntry> =
         MountsParser.parse(File("/proc/mounts").readText())
 
-    fun mount(host: String, export: String, port: Int, mountpoint: String, fuse: FuseLaunch): Result {
+    fun mount(host: String, export: String, port: Int, mountpoint: String, fuse: FuseLaunch): Result =
+        mount(host, export, port, mountpoint, fuse, ::runSu)
+
+    /** Same injected-su seam as [unmount], and for the same reason: the refusals this
+     *  entrance makes are the ones a hand-edited pref reaches, so they have to be
+     *  provable without a device. [SuResult] is internal, hence an overload rather than
+     *  a default parameter on the public one. */
+    internal fun mount(
+        host: String,
+        export: String,
+        port: Int,
+        mountpoint: String,
+        fuse: FuseLaunch,
+        su: (String) -> SuResult,
+    ): Result {
+        val target = when (val routing = resolveTarget(mountpoint, su)) {
+            is Routing.Refused -> return routing.result
+            is Routing.Ready -> routing.target
+        }
         val attempts = mutableListOf<Attempt>()
         for (vers in MOUNT_VERSIONS) {
-            val r = runSu(kernelMountScript(host, export, port, mountpoint, vers))
-            if (r.code == 0) return mounted(mountpoint, mountsFromRoot(r.stdout))
+            val r = su(kernelMountScript(host, export, port, target.mountAt, vers, target.lowerDir))
+            if (r.code == 0) return mounted(target, mountsFromRoot(r.stdout))
             attempts += Attempt(r.code, r.stderr)
             // Neither a missing su nor an unanswered prompt gets better on the next
             // rung, and each spawn can block for SU_TIMEOUT_SECONDS.
-            if (isRootUnavailable(r.code)) return failed(attempts, r, null, fuse)
+            if (isRootUnavailable(r.code)) return failed(attempts, r, null, fuse, target)
         }
-        val f = runSu(fuseMountScript(host, export, port, mountpoint, fuse))
-        if (f.code == 0) return mounted(mountpoint, mountsFromRoot(f.stdout))
-        return failed(attempts, f, fuseOutcomeFor(f.code), fuse)
+        val f = su(fuseMountScript(host, export, port, target.mountAt, fuse, target.lowerDir))
+        if (f.code == 0) return mounted(target, mountsFromRoot(f.stdout))
+        return failed(attempts, f, fuseOutcomeFor(f.code), fuse, target)
     }
 
-    private fun mounted(mountpoint: String, mountsText: String?): Result =
-        Result(true, "mounted at $mountpoint").withState(mountpoint, mountsText)
+    /** Where the mount is really made, what the user is told, and the lower directory
+     *  that must exist first; [lowerDir] is null when no routing was needed. */
+    internal data class Target(val mountAt: String, val visible: String, val lowerDir: String?) {
+        val routed: Boolean get() = lowerDir != null
+    }
+
+    private sealed interface Routing {
+        data class Ready(val target: Target) : Routing
+        data class Refused(val result: Result) : Routing
+    }
+
+    /** Routing is decided before any mount runs, because it needs the GLOBAL namespace's
+     *  propagation state — /proc/1/mountinfo, read through the same su ladder as the rest.
+     *  The path-only half comes from [MountpointPolicy.refusalFor], the same function the
+     *  mountpoint field calls: this entrance is reachable without the UI. */
+    private fun resolveTarget(mountpoint: String, su: (String) -> SuResult): Routing {
+        MountpointPolicy.refusalFor(mountpoint)?.let { return Routing.Refused(refused(mountpoint, it)) }
+        if (EmulatedMount.localRefusal(mountpoint) == EmulatedMount.Refusal.NOT_EMULATED) {
+            return Routing.Ready(Target(mountpoint, mountpoint, null))
+        }
+        val r = su("cat /proc/1/mountinfo")
+        val mountinfo = r.stdout
+        if (r.code != 0 || mountinfo.isNullOrBlank()) {
+            return Routing.Refused(
+                Result(
+                    ok = false,
+                    message = "cannot read the global mount table: ${firstLine(r.stderr) ?: "exit ${r.code}"}",
+                    diagnosis = if (isRootUnavailable(r.code)) MountDiagnosis.NO_ROOT else MountDiagnosis.GENERIC,
+                ),
+            )
+        }
+        return when (val routed = EmulatedMount.route(mountinfo, mountpoint)) {
+            is EmulatedMount.Result.Routed -> Routing.Ready(
+                Target(routed.route.mountAt, routed.route.appVisible, routed.route.lowerDir),
+            )
+            is EmulatedMount.Result.Refused -> Routing.Refused(refused(mountpoint, routed.refusal))
+        }
+    }
+
+    /** A refusal reaching here got past the caller's own check, so it still has to say
+     *  something actionable rather than an exit code. */
+    private fun refused(mountpoint: String, refusal: EmulatedMount.Refusal): Result = when (refusal) {
+        EmulatedMount.Refusal.NO_SHARED_PEER -> Result(
+            false,
+            "this device's shared storage has no propagating peer, so no mount there could become visible",
+            diagnosis = MountDiagnosis.EMULATED_NO_SHARED_PEER,
+        )
+        EmulatedMount.Refusal.IS_TREE_ROOT -> Result(
+            false,
+            "$mountpoint is the shared-storage tree root; mount a subdirectory of it instead",
+            diagnosis = MountDiagnosis.GENERIC,
+        )
+        EmulatedMount.Refusal.RESERVED_NAME -> Result(
+            false,
+            "$mountpoint is under Android/, which vold owns; choose another name",
+            diagnosis = MountDiagnosis.GENERIC,
+        )
+        EmulatedMount.Refusal.NOT_EMULATED -> Result(
+            false,
+            "$mountpoint is not a path inside shared storage",
+            diagnosis = MountDiagnosis.GENERIC,
+        )
+        EmulatedMount.Refusal.HAS_DOT_COMPONENT -> Result(
+            false,
+            "$mountpoint has a . or .. step in it; mount the directory it really names instead",
+            diagnosis = MountDiagnosis.GENERIC,
+        )
+        // Quoted, unlike the rest: the whitespace that earns this refusal is otherwise
+        // invisible in a status line.
+        EmulatedMount.Refusal.NOT_ABSOLUTE -> Result(
+            false,
+            "'$mountpoint' is not an absolute path; a mountpoint must start with /",
+            diagnosis = MountDiagnosis.GENERIC,
+        )
+        EmulatedMount.Refusal.IS_FILESYSTEM_ROOT -> Result(
+            false,
+            "'$mountpoint' names the filesystem root; mount a directory below it instead",
+            diagnosis = MountDiagnosis.GENERIC,
+        )
+    }
+
+    /** A routed mount is only real once the global namespace shows it at the app-visible
+     *  path: that is the claim made to the user. A blank capture stays UNKNOWN, since an
+     *  unreadable /proc/1/mounts is no evidence either way.
+     *
+     *  A mount that stayed on the master path is torn down rather than left behind: the
+     *  verdict is FAILED, and leaving our own mount up — with, on the FUSE rung, the
+     *  daemon only a umount stops — bills the user for a path he never got. It is not
+     *  the last chance to remove it: [unmount] reaches the same master path, which is why
+     *  EMULATED_NOT_PROPAGATED_STUCK can honestly name the Unmount button.
+     *  [teardown] is a seam only because the verdict must stay testable without a device. */
+    internal fun mounted(
+        target: Target,
+        mountsText: String?,
+        teardown: (String) -> Boolean = ::umountMaster,
+    ): Result {
+        val entries = entries(mountsText)
+        val visible = mountSnapshot(target.visible, entries)
+        if (target.routed && visible.state == State.NOT_MOUNTED) {
+            val master = mountSnapshot(target.mountAt, entries)
+            if (master.state != State.MOUNTED) {
+                return Result(
+                    ok = false,
+                    message = "mount reported success but nothing is mounted at ${target.visible}",
+                    diagnosis = MountDiagnosis.GENERIC,
+                    appVisible = target.visible,
+                )
+            }
+            val stranded = "mounted at ${target.mountAt} but it never appeared at ${target.visible}"
+            val removed = teardown(target.mountAt)
+            return Result(
+                ok = false,
+                message = if (removed) "$stranded, so it was removed again" else "$stranded, and removing it failed",
+                diagnosis = if (removed) {
+                    MountDiagnosis.EMULATED_NOT_PROPAGATED
+                } else {
+                    MountDiagnosis.EMULATED_NOT_PROPAGATED_STUCK
+                },
+                appVisible = target.visible,
+            )
+        }
+        return Result(true, "mounted at ${target.visible}", appVisible = target.visible.takeIf { target.routed })
+            .withState(visible)
+    }
+
+    /** Same su ladder as the mount, so the umount lands in the namespace the mount was
+     *  made in; a slave never propagates to its master, so only the master path can
+     *  withdraw it. */
+    private fun umountMaster(path: String): Boolean = runSu(unmountScript(path)).code == 0
 
     /** The FUSE rung is deliberately absent from [attempts]: root is already proven by
      *  the time it runs, so its own timeout is a hung script, not a missing su. */
@@ -113,6 +287,7 @@ object RootMount {
         last: SuResult,
         fuse: FuseOutcome?,
         launch: FuseLaunch,
+        target: Target,
     ): Result {
         val diagnosis = classifyMountFailure(
             attempts,
@@ -127,6 +302,7 @@ object RootMount {
                 ?: firstLine(last.stdout.orEmpty())
                 ?: "exit ${last.code}",
             diagnosis = diagnosis,
+            appVisible = target.visible.takeIf { target.routed },
         )
     }
 
@@ -143,9 +319,10 @@ object RootMount {
         port: Int,
         mountpoint: String,
         vers: String,
+        lowerDir: String? = null,
     ): String = """
         ${preloadLine("nfs nfsv3 nfsv4")}
-        mkdir -p ${quote(mountpoint)}
+        ${mountpointDirLine(mountpoint, lowerDir)}
         mount -t nfs -o nolock,port=$port,tcp,vers=$vers ${quote("$host:$export")} ${quote(mountpoint)}
         S=${'$'}?
         { cat /proc/1/mounts
@@ -154,6 +331,14 @@ object RootMount {
         }
         exit ${'$'}S
     """.trimIndent()
+
+    /** A routed mount creates its directory in the LOWER tree, not at the mountpoint:
+     *  the master-side path is only the fuse view of that directory, and going through
+     *  the view would force the MediaProvider daemon's own 0775 ownership and need it
+     *  running. MediaProvider resolves LOOKUP by lstat(2) on the lower path, so the name
+     *  is there for the mount immediately — no scan, no wait. */
+    private fun mountpointDirLine(mountpoint: String, lowerDir: String?): String =
+        "mkdir -p ${quote(lowerDir ?: mountpoint)}"
 
     /** Android kernels usually build these filesystems as modules that nothing loads
      *  until a mount asks, and /proc/filesystems lists only what is already
@@ -193,6 +378,7 @@ object RootMount {
         port: Int,
         mountpoint: String,
         fuse: FuseLaunch,
+        lowerDir: String? = null,
     ): String {
         val mp = quote(mountpoint)
         val log = quote(fuse.logPath)
@@ -210,7 +396,7 @@ object RootMount {
                 echo $FS_LIST_MARKER
                 cat /proc/filesystems 2>/dev/null || true
             }
-            mkdir -p $mp || { mammon_dump; exit $FUSE_MKDIR_FAILED; }
+            ${mountpointDirLine(mountpoint, lowerDir)} || { mammon_dump; exit $FUSE_MKDIR_FAILED; }
             ${preloadLine("fuse")}
             # The fd must ride a GROUP redirection, not `exec 3<>`: Android's
             # /system/bin/sh is mksh, and mksh marks `exec`-opened fds >= 3
@@ -305,20 +491,60 @@ object RootMount {
     internal fun hasFilesystem(filesystemsText: String, type: String): Boolean =
         filesystemsText.lineSequence().any { it.substringAfterLast('\t').trim() == type }
 
-    /** Serves both backings: a plain umount makes the kernel send FUSE_DESTROY, which
-     *  is how the daemon learns to exit. */
-    fun unmount(mountpoint: String): Result =
-        classifyUnmountResult(mountpoint, runSu(unmountScript(mountpoint)))
+    /**
+     * Serves both backings: a plain umount makes the kernel send FUSE_DESTROY, which
+     * is how the daemon learns to exit.
+     *
+     * A routed mount must be unmounted at the MASTER path it was made at — a slave does
+     * not propagate to its master, so a umount inside the /storage view would leave the
+     * real mount standing. A refusal about the PATH still falls back to the literal one:
+     * every verdict [MountpointPolicy.refusalFor] can give is reached before any su
+     * runs, so the refusal knows nothing about what is mounted, and a mount put there
+     * by another entrance can still be standing.
+     *
+     * NO_ROOT is the one diagnosis this function ever returns, and the one no second
+     * spawn can improve on; [mount] short-circuits its ladder on the same predicate
+     * rather than block another SU_TIMEOUT_SECONDS with both buttons disabled. A
+     * mountinfo read that fails with root present is GENERIC and falls through on
+     * purpose — the routing decision is exactly what it could not make.
+     */
+    fun unmount(mountpoint: String): Result = unmount(mountpoint, ::runSu)
 
-    internal fun classifyUnmountResult(mountpoint: String, result: SuResult): Result {
-        val snapshot = mountSnapshot(mountpoint, mountsFromRoot(result.stdout))
+    internal fun unmount(mountpoint: String, su: (String) -> SuResult): Result {
+        val routing = resolveTarget(mountpoint, su)
+        if (routing is Routing.Refused && routing.result.diagnosis == MountDiagnosis.NO_ROOT) {
+            return routing.result
+        }
+        val target = (routing as? Routing.Ready)?.target ?: Target(mountpoint, mountpoint, null)
+        return classifyUnmountResult(target, su(unmountScript(target.mountAt)))
+    }
+
+    internal fun classifyUnmountResult(mountpoint: String, result: SuResult): Result =
+        classifyUnmountResult(Target(mountpoint, mountpoint, null), result)
+
+    internal fun classifyUnmountResult(target: Target, result: SuResult): Result {
+        val snapshot = unmountSnapshot(target, entries(mountsFromRoot(result.stdout)))
         if (result.code == 0) {
-            return Result(true, "unmounted $mountpoint").withState(snapshot)
+            return Result(true, "unmounted ${target.visible}", appVisible = target.visible.takeIf { target.routed })
+                .withState(snapshot)
         }
         return when {
             snapshot.hasExactEntry -> classifyUmountError(result.code, result.stderr).withState(snapshot)
             snapshot.state == State.NOT_MOUNTED -> Result(true, "not mounted").withState(snapshot)
             else -> classifyUmountError(result.code, result.stderr)
+        }
+    }
+
+    /** Only the master side can still hold a routed mount, so the app-visible path is
+     *  consulted just to catch a copy the kernel failed to withdraw. */
+    private fun unmountSnapshot(target: Target, entries: List<MountEntry>?): MountSnapshot {
+        val at = mountSnapshot(target.mountAt, entries)
+        if (!target.routed || at.state != State.NOT_MOUNTED) return at
+        val visible = mountSnapshot(target.visible, entries)
+        return if (visible.state == State.MOUNTED) {
+            visible
+        } else {
+            at.copy(hasExactEntry = at.hasExactEntry || visible.hasExactEntry)
         }
     }
 
@@ -328,9 +554,6 @@ object RootMount {
         cat /proc/1/mounts
         exit ${'$'}S
     """.trimIndent()
-
-    private fun Result.withState(mountpoint: String, mountsText: String?): Result =
-        withState(mountSnapshot(mountpoint, mountsText))
 
     private fun Result.withState(snapshot: MountSnapshot): Result =
         copy(stateAfter = snapshot.state, fsType = snapshot.fsType)
@@ -449,11 +672,17 @@ object RootMount {
 }
 
 /**
- * The mountpoints a real root mount can never serve, because they are Android's own
- * emulated-storage surface: /storage is tmpfs, /storage/emulated is the MediaProvider
- * FUSE mount, /sdcard is a symlink into it, and /data/media is its on-disk backing.
- * Mounting there is refused before any su call; the SAF card is the only way to reach
- * that storage. The module's fslib.sh automount mirrors this exact set.
+ * Android's own storage surface: /storage is tmpfs, /storage/emulated is the
+ * MediaProvider FUSE view, /sdcard is a symlink into it, and /data/media is its on-disk
+ * backing.
+ *
+ * Membership is NOT a refusal, and the old names said it was: a subdirectory of the
+ * emulated tree is mountable, and [EmulatedMount] routes it to the shared master where
+ * the kernel replicates it back into this view. What stays refused is the tree root
+ * itself, the slave-side view as a mount target, /data/media, which sits below the
+ * FUSE daemon rather than in the propagating view, and a saved spelling root could not
+ * use as a mountpoint. [refusalFor] is that whole composition and the only spelling
+ * of it either entrance uses.
  *
  * The "/sdcard" literal is a mountpoint prefix to match, never a path to open, so the
  * SdCardPath detector's getExternalStorageDirectory() suggestion does not apply.
@@ -461,18 +690,64 @@ object RootMount {
 @SuppressLint("SdCardPath")
 internal object MountpointPolicy {
 
-    /** Roots whose entire tree is emulated storage, checked at path-component
-     *  boundaries so /storageroom or /data/mediafoo stay mountable. */
-    val UNMOUNTABLE_ROOTS = listOf("/storage", "/sdcard", "/data/media")
+    /** Roots whose entire tree is that surface, checked at path-component boundaries so
+     *  /storageroom or /data/mediafoo stay outside it. */
+    val STORAGE_SURFACE_ROOTS = listOf("/storage", "/sdcard", "/data/media")
 
-    /** Collapses // runs and a trailing / so "/storage/" and "//storage/x" still match;
-     *  empty collapses to "/". */
+    /** Trims, collapses // runs and drops a trailing / so "/storage/" and "//storage/x"
+     *  still match; empty collapses to "/". The trim is load-bearing: without it
+     *  "/storage/emulated/0/Android " misses [EmulatedMount]'s RESERVED_NAME refusal. */
     fun normalize(path: String): String =
         path.trim().replace(Regex("/+"), "/").trimEnd('/').ifEmpty { "/" }
 
-    /** True when [path] is the emulated-storage tree (or one of its roots). */
-    fun isUnmountable(path: String): Boolean {
+    /** Membership only; what it earns is [refusalFor]'s answer, and for an emulated path
+     *  [EmulatedMount] speaks first. */
+    fun isInStorageSurface(path: String): Boolean {
         val p = normalize(path)
-        return UNMOUNTABLE_ROOTS.any { p == it || p.startsWith("$it/") }
+        return STORAGE_SURFACE_ROOTS.any { p == it || p.startsWith("$it/") }
+    }
+
+    /**
+     * The refusal a path earns on its own, or null when only the device can decide.
+     *
+     * [EmulatedMount]'s NOT_EMULATED means "not routable through the emulated view", so
+     * it is an answer only once crossed with this set: /mnt/nas is mountable, a physical
+     * volume under /storage and /data/media typed directly are not. Both entrances —
+     * the mountpoint field and [RootMount.mount] — must apply the same cross, or the
+     * refusal holds only for whoever remembers it.
+     *
+     * That same arm is the one whose target is the saved string itself, so it is also
+     * where [verbatimRefusal] applies. An emulated path is exempt because its target is
+     * derived from the normalized request and its spelling never reaches root.
+     */
+    fun refusalFor(path: String): EmulatedMount.Refusal? =
+        when (val refusal = EmulatedMount.localRefusal(path)) {
+            EmulatedMount.Refusal.NOT_EMULATED ->
+                surfaceRefusal(path).takeIf { isInStorageSurface(path) } ?: verbatimRefusal(path)
+            else -> refusal
+        }
+
+    /** Inside the surface, a dot component is its own refusal: what the SD-card-and-
+     *  /data/media wording claims is false of "/storage/emulated/0/../nfs", which is
+     *  neither. The component decides and not the subtree, since a dot in the media-id
+     *  slot reads as a non-numeric id and one below it as unroutable — NOT_EMULATED
+     *  both times. fslib.sh splits its own storage-surface arm the same two ways
+     *  (`fslib.sh:527-533`), and the two were measured against each other over one
+     *  corpus of spellings rather than asserted here. */
+    private fun surfaceRefusal(path: String): EmulatedMount.Refusal =
+        if (normalize(path).split('/').any { it == "." || it == ".." }) {
+            EmulatedMount.Refusal.HAS_DOT_COMPONENT
+        } else {
+            EmulatedMount.Refusal.NOT_EMULATED
+        }
+
+    /** What root cannot be handed as a mountpoint: [normalize] decides but never
+     *  rewrites, so a spelling that is not absolute AS SAVED would become a `mkdir -p`
+     *  in the su shell's own working directory. fslib.sh re-asks the same question of
+     *  the same saved string in its own non-emulated branch. */
+    private fun verbatimRefusal(path: String): EmulatedMount.Refusal? = when {
+        !path.startsWith("/") -> EmulatedMount.Refusal.NOT_ABSOLUTE
+        normalize(path) == "/" -> EmulatedMount.Refusal.IS_FILESYSTEM_ROOT
+        else -> null
     }
 }

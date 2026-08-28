@@ -141,11 +141,12 @@ mammon_quote_free() {
 
 mammon_mounted_at() {
     # Field comparison over the GLOBAL namespace view; /proc/mounts escapes
-    # whitespace as \040, so the target must be escaped the same way.
-    mp=$(printf '%s' "$1" | sed 's/ /\\040/g')
+    # whitespace as \040, so the target must be escaped the same way. Not named
+    # `mp`: the caller's own mountpoint must survive this call.
+    esc=$(printf '%s' "$1" | sed 's/ /\\040/g')
     found=0
     while read -r _src tgt fstype _rest; do
-        if [ "$tgt" = "$mp" ] && { [ "$fstype" = nfs ] || [ "$fstype" = nfs4 ] || [ "$fstype" = fuse ]; }; then
+        if [ "$tgt" = "$esc" ] && { [ "$fstype" = nfs ] || [ "$fstype" = nfs4 ] || [ "$fstype" = fuse ]; }; then
             found=1
             break
         fi
@@ -165,6 +166,266 @@ mammon_share_up() {
         return 0
     fi
     return 1
+}
+
+# mangle_path (fs/seq_file.c) escapes space, tab, newline and backslash in the root and
+# mount-point fields as a backslash plus EXACTLY three octal digits. printf '%b' is not a
+# decoder for that: after a leading 0 it consumes up to three more digits and stops at the
+# first non-digit, so '\0400' — how '/mnt/user 0/emulated' prints — loses the space and
+# eats the 0. Those four escapes are decoded left to right and a decoded \134 is never
+# re-read — the non-overlapping order MountsParser.unescape's \\[0-7]{3} regex applies,
+# over the only escapes this field can carry.
+mammon_unescape_path() {
+    esc_rest=$1
+    esc_out=
+    esc_tab=$(printf '\t')
+    # A literal: no escape survives a plain shell assignment.
+    esc_nl='
+'
+    while :; do
+        case $esc_rest in
+            *\\*) ;;
+            *) break ;;
+        esac
+        esc_out=$esc_out${esc_rest%%\\*}
+        esc_rest=${esc_rest#*\\}
+        case $esc_rest in
+            040*) esc_out="$esc_out "; esc_rest=${esc_rest#040} ;;
+            011*) esc_out=$esc_out$esc_tab; esc_rest=${esc_rest#011} ;;
+            012*) esc_out=$esc_out$esc_nl; esc_rest=${esc_rest#012} ;;
+            134*) esc_out=$esc_out\\; esc_rest=${esc_rest#134} ;;
+            *) esc_out=$esc_out\\ ;;
+        esac
+    done
+    printf '%s\n' "$esc_out$esc_rest"
+}
+
+# Prints the first */emulated fuse mount whose shared: group is $2, reading $1. FIRST, and
+# never the slave view itself: EmulatedMount.mountSite takes firstOrNull over the same
+# filter, and one decision in two languages must not answer differently.
+mammon_emulated_peer() {
+    peer_mi=$1
+    peer_want=$2
+    # Subshell so `set -f` cannot leak into the caller.
+    (
+        set -f
+        while IFS= read -r line; do
+            # shellcheck disable=SC2086 # deliberate field split, globbing off
+            set -- $line
+            [ "$#" -ge 8 ] || continue
+            tgt=$5
+            case $tgt in
+                /storage/emulated) continue ;;
+                *"/emulated") ;;
+                *) continue ;;
+            esac
+            shift 6
+            found=
+            while [ "$#" -gt 0 ] && [ "$1" != - ]; do
+                case $1 in shared:*) found=${1#shared:} ;; esac
+                shift
+            done
+            if [ "$1" != - ] || [ "$2" != fuse ] || [ -z "$found" ]; then continue; fi
+            [ "$found" = "$peer_want" ] || continue
+            mammon_unescape_path "$tgt"
+            exit 0
+        done < "$peer_mi"
+        exit 1
+    )
+}
+
+# /storage/emulated is a SLAVE of the peer group its master: tag names, so a mount
+# made there propagates to nobody. The shared MASTER of that group — the same fuse
+# device under another path — is where the mount must land, and it is derived, never
+# written down: a literal froze at the wrong value three times in this project.
+#
+# propagate_from: wins over master: where a line carries both, and it wins over file
+# order too: each group gets its own pass. master: is the IMMEDIATE master's group id,
+# which may have no visible line under our root at all, while fs/pnode.c
+# get_dominating_id gives the nearest master group that IS reachable here. Keying on
+# master: alone makes the app route while this script SKIPs on the same phone: a mount
+# that works from the button and vanishes at every boot, which reads as flakiness
+# rather than as the refusal it is.
+#
+# A /storage/emulated carrying a bare shared:N and nothing above it SENDS propagation,
+# so a mount made in place reaches the whole group: it is its own master, and printing
+# it here routes there rather than refusing a device the route works on.
+mammon_emulated_master() {
+    mi=${MAMMON_PROC_MOUNTINFO:-/proc/1/mountinfo}
+    [ -r "$mi" ] || return 1
+    # Subshell so `set -f` cannot leak into the caller.
+    (
+        set -f
+        emu_shared=
+        emu_master=
+        emu_dom=
+        while IFS= read -r line; do
+            # shellcheck disable=SC2086 # deliberate field split, globbing off
+            set -- $line
+            if [ "$#" -lt 8 ] || [ "$5" != /storage/emulated ]; then continue; fi
+            shift 6
+            try_shared=
+            try_master=
+            try_dom=
+            # The optional fields are a variable-length list closed by "-", so a
+            # column-counting parser is wrong on the next device, not this one.
+            while [ "$#" -gt 0 ] && [ "$1" != - ]; do
+                case $1 in
+                    shared:*) try_shared=${1#shared:} ;;
+                    master:*) try_master=${1#master:} ;;
+                    propagate_from:*) try_dom=${1#propagate_from:} ;;
+                esac
+                shift
+            done
+            # The fuse gate and last-line-wins both mirror mountSite's lastOrNull filter.
+            if [ "$1" != - ] || [ "$2" != fuse ]; then continue; fi
+            emu_shared=$try_shared
+            emu_master=$try_master
+            emu_dom=$try_dom
+        done < "$mi"
+        if [ -n "$emu_dom$emu_master" ]; then
+            # shellcheck disable=SC2086 # group ids carry no spaces, and either may be empty
+            for want in $emu_dom $emu_master; do
+                if peer=$(mammon_emulated_peer "$mi" "$want"); then
+                    printf '%s\n' "$peer"
+                    exit 0
+                fi
+            done
+            exit 1
+        fi
+        [ -n "$emu_shared" ] || exit 1
+        printf '%s\n' /storage/emulated
+    )
+}
+
+# Built once at source time, not per call: an inline literal would embed a tab, a CR
+# and U+2028 in the script text, so the escapes have to be decoded, and mksh forks for
+# $( ) around the external printf. Unprefixed — internal, not a tenth documented host
+# override, which this assignment would overwrite anyway.
+tw_set=$(printf '\011,\012,\013,\014,\015,\034,\035,\036,\037,\040,\302\240,\341\232\200,\342\200\200,\342\200\201,\342\200\202,\342\200\203,\342\200\204,\342\200\205,\342\200\206,\342\200\207,\342\200\210,\342\200\211,\342\200\212,\342\200\250,\342\200\251,\342\200\257,\342\201\237,\343\200\200')
+
+# Sets mammon_trimmed to $1 with MountpointPolicy.normalize's String.trim() applied.
+# Kotlin reads Char.isWhitespace as Character.isWhitespace OR isSpaceChar, so the set is
+# the ASCII space class, U+001C-U+001F and every Unicode space separator, non-breaking
+# ones included; U+0085 is absent because the JVM answers false to both halves.
+# [[:space:]] is only the ASCII third of that and is locale-dependent besides.
+# Characters are stripped, never bytes: 0x8A ends both U+200A and U+044A, so a
+# byte-class trim would bite the tail off a Cyrillic name.
+mammon_trim_ws() {
+    mammon_trimmed=$1
+    tw_prev=
+    # A pass can uncover what an earlier entry already walked past, as in "<tab><sp><tab>".
+    while [ "$mammon_trimmed" != "$tw_prev" ]; do
+        tw_prev=$mammon_trimmed
+        tw_rest=$tw_set
+        while [ -n "$tw_rest" ]; do
+            tw_c=${tw_rest%%,*}
+            case $tw_rest in
+                *,*) tw_rest=${tw_rest#*,} ;;
+                *) tw_rest= ;;
+            esac
+            while :; do
+                case $mammon_trimmed in
+                    "$tw_c"*) mammon_trimmed=${mammon_trimmed#"$tw_c"} ;;
+                    *) break ;;
+                esac
+            done
+            while :; do
+                case $mammon_trimmed in
+                    *"$tw_c") mammon_trimmed=${mammon_trimmed%"$tw_c"} ;;
+                    *) break ;;
+                esac
+            done
+        done
+    done
+}
+
+# The device-free half of the decision, as EmulatedMount.recognize is: it sets mid and
+# name from the saved spelling alone, so its verdict cannot change while the caller
+# waits. 0 recognized, 1 not emulated, 2 tree root, 3 reserved by vold.
+mammon_route_recognize() {
+    p=$1
+    # normalize's three operations in its order: trimming after the collapse would leave
+    # "/a/b/ " with the trailing slash the app strips. The guard is a printable-ASCII
+    # test rather than [[:space:]] because glibc calls U+00A0 graph, not space.
+    case $p in *[!!-~]*) mammon_trim_ws "$p"; p=$mammon_trimmed ;; esac
+    case $p in *//*) p=$(printf '%s' "$p" | sed 's|//*|/|g') ;; esac
+    p=${p%/}
+    case $p in
+        /sdcard | /storage/emulated) return 2 ;;
+        /sdcard/*) rest=0/${p#/sdcard/} ;;
+        /storage/emulated/*) rest=${p#/storage/emulated/} ;;
+        /mnt/user/*)
+            # * spans slashes in a glob, so the shape is checked instead:
+            # EmulatedMount.MASTER_SPELLING refuses /mnt/user/abc/... and
+            # /mnt/user/x/y/..., and the app then mounts the typed path literally.
+            mnt_user=${p#/mnt/user/}
+            mnt_user=${mnt_user%%/*}
+            case $mnt_user in '' | *[!0-9]*) return 1 ;; esac
+            case ${p#/mnt/user/"$mnt_user"} in
+                /emulated) return 2 ;;
+                /emulated/*) rest=${p#/mnt/user/"$mnt_user"/emulated/} ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+    mid=${rest%%/*}
+    name=${rest#*/}
+    case $mid in '' | *[!0-9]*) return 1 ;; esac
+    [ "$name" != "$rest" ] || return 2
+    # Same rejection, and same verdict, as EmulatedMount.recognize — but here it is the last
+    # check before a mkdir -p as root: the app validates before saving, while this script
+    # reads a pref file a hand edit can leave a traversal out of the tree in.
+    case /$name/ in
+        */./* | */../*) return 1 ;;
+    esac
+    # vold mounts Android/data and Android/obb itself; a mount of ours there would
+    # fight it.
+    case ${name%%/*} in Android) return 3 ;; esac
+    return 0
+}
+
+# The half that needs the device, as the tail of EmulatedMount.route() is: the mount
+# table is the only input that can answer differently one tick later. $1 mid, $2 name.
+# Sets mammon_route_at (where to mount), mammon_route_lower (the directory to create
+# first) and mammon_route_visible (where apps will see it); 4 when no shared peer.
+mammon_route_site() {
+    mammon_route_at=$(mammon_emulated_master) || return 4
+    mammon_route_at=$mammon_route_at/$1/$2
+    mammon_route_lower=${MAMMON_MEDIA_ROOT:-/data/media}/$1/$2
+    mammon_route_visible=/storage/emulated/$1/$2
+}
+
+# MediaProvider serves the emulated view and starts long after post-fs-data, so at
+# late_start the master can be simply absent: only the site half is polled, inside the
+# caller's window ($i of $tries), rather than raced or guessed at with a fixed delay.
+# What the split buys is a verdict that cannot drift mid-wait, not saved processes: the
+# trim's table is built once at file scope, so re-asking recognition per tick re-forked
+# only mammon_route_recognize's //-collapse, and only for a spelling carrying a doubled
+# slash — two processes per tick there, and none at all for /storage/emulated/0/nfs.
+mammon_route_wait() {
+    mammon_route_recognize "$2"
+    rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    mammon_route_site "$mid" "$name" && return 0
+    mammon_log "$1" "automount: '$2' is inside emulated storage; waiting for the MediaProvider FUSE view"
+    while [ "$i" -lt "$tries" ]; do
+        i=$((i + 1))
+        sleep "$interval"
+        mammon_route_site "$mid" "$name" && return 0
+    done
+    return 4
+}
+
+# Prints the clause the FAILED lines end with. "unmounted" is a claim, and a mount left
+# standing at a path nobody is told about is the one nobody goes looking for.
+mammon_teardown() {
+    if umount -l "$1" 2>/dev/null; then
+        printf 'unmounted %s' "$1"
+    else
+        printf 'STILL MOUNTED at %s, remove it from a root shell' "$1"
+    fi
 }
 
 mammon_automount_main() {
@@ -201,30 +462,98 @@ mammon_automount_main() {
     # The daemon takes the identity as an optional 5th argument; an unset pref
     # leaves it off, and the daemon then claims AuthIdentity.DEFAULT itself.
     identity=$(mammon_pref_value "$prefs" identity) || identity=
+    # MountpointPolicy.normalize decides for the app, so the same three operations in the
+    # same order decide here; without them the refusals below judge a spelling neither
+    # normalize nor isInStorageSurface ever sees.
+    mp_raw=$mp
+    case $mp in *[!!-~]*) mammon_trim_ws "$mp"; mp=$mammon_trimmed ;; esac
+    case $mp in *//*) mp=$(printf '%s' "$mp" | sed 's|//*|/|g') ;; esac
     mp=${mp%/}
     if ! mammon_quote_free "$host" || ! mammon_quote_free "$export_path" || ! mammon_quote_free "$mp" || ! mammon_quote_free "$identity"; then
         mammon_log "$log" "SKIPPED: spec contains a single quote and is refused ($host:$port$export_path)"
         return 0
     fi
+    # Both spellings, because the test is on the normalized one and ' ', '/', '//' and
+    # ' / ' all empty it: naming only that prints one line for four hand edits, and
+    # naming only the saved one would call '/' non-absolute, which it is not.
     case $mp in
         /*) : ;;
-        *) mammon_log "$log" "SKIPPED: mountpoint '$mp' is not absolute"; return 0 ;;
-    esac
-    # Mirrors RootMount.MountpointPolicy: Android's own emulated storage (/storage is
-    # tmpfs, /storage/emulated the MediaProvider FUSE mount, /sdcard a symlink into it,
-    # /data/media its backing) can never host a real mount, so it is refused here too.
-    case $mp in
-        /storage|/storage/*|/sdcard|/sdcard/*|/data/media|/data/media/*)
-            mammon_log "$log" "SKIPPED: mountpoint '$mp' is Android's own storage, which cannot be remounted"
+        *)
+            mammon_log "$log" "SKIPPED: mountpoint '$mp_raw' normalizes to '$mp', which is not absolute"
             return 0
             ;;
     esac
+    # Before the routing wait: a refusal that cannot change with time must not
+    # spend the boot window first.
     case $export_path in
         /*) : ;;
         *) mammon_log "$log" "SKIPPED: export '$export_path' is not absolute"; return 0 ;;
     esac
-    if mammon_mounted_at "$mp"; then
-        mammon_log "$log" "SKIPPED: something is already mounted at $mp"
+    # A path inside the emulated tree is mounted on the shared master and seen at
+    # $visible; /storage itself is tmpfs and /data/media sits BELOW the FUSE daemon
+    # serving that tree, so those two stay refused.
+    target=$mp_raw
+    visible=$mp_raw
+    lower=
+    # The saved spelling, not $mp: resolveTarget hands EmulatedMount.route the same
+    # untouched string, and normalize is not idempotent — "/a/nfs /" normalizes to
+    # "/a/nfs " once and to "/a/nfs" twice.
+    mammon_route_wait "$log" "$mp_raw"
+    case $? in
+        0)
+            target=$mammon_route_at
+            visible=$mammon_route_visible
+            lower=$mammon_route_lower
+            mammon_log "$log" "automount: routing $mp to $target, visible at $visible"
+            ;;
+        2)
+            mammon_log "$log" "SKIPPED: mountpoint '$mp' is the emulated tree root; mount a subdirectory instead"
+            return 0
+            ;;
+        3)
+            mammon_log "$log" "SKIPPED: mountpoint '$mp' is under Android/, which vold owns"
+            return 0
+            ;;
+        4)
+            mammon_log "$log" "SKIPPED: no shared peer for /storage/emulated in this device's mount table, so a mount inside emulated storage would reach no app"
+            return 0
+            ;;
+        *)
+            case $mp in
+                /storage | /storage/* | /sdcard | /sdcard/* | /data/media | /data/media/*)
+                    # The three roots are MountpointPolicy.STORAGE_SURFACE_ROOTS, matched
+                    # at a component boundary as isInStorageSurface does — which needs the
+                    # normalized $mp above, all three operations of it, since that function
+                    # normalizes first. A traversal arrives here as "not emulated" too,
+                    # hence the split below.
+                    case /$mp/ in
+                        */./* | */../*)
+                            mammon_log "$log" "SKIPPED: mountpoint '$mp' has a . or .. component; save the path it really names instead"
+                            ;;
+                        *)
+                            mammon_log "$log" "SKIPPED: mountpoint '$mp' is Android's own storage; of that tree only a path inside emulated storage can be routed"
+                            ;;
+                    esac
+                    return 0
+                    ;;
+            esac
+            # Mounted VERBATIM, as RootMount.resolveTarget mounts a non-emulated
+            # mountpoint: normalize decides there but never rewrites the target, so a
+            # trimmed one would strand the boot mount where Unmount cannot name it.
+            # Absoluteness is re-asked because the trim is what can hide a leading space
+            # from the check above, and mkdir -p would then run in late_start's cwd.
+            case $mp_raw in
+                /*) : ;;
+                *) mammon_log "$log" "SKIPPED: mountpoint '$mp_raw' is not absolute as saved"; return 0 ;;
+            esac
+            ;;
+    esac
+    if mammon_mounted_at "$target"; then
+        mammon_log "$log" "SKIPPED: something is already mounted at $target"
+        return 0
+    fi
+    if [ "$visible" != "$target" ] && mammon_mounted_at "$visible"; then
+        mammon_log "$log" "SKIPPED: something is already mounted at $visible"
         return 0
     fi
     mammon_log "$log" "automount: waiting for $host:$port"
@@ -260,9 +589,24 @@ mammon_automount_main() {
         return 0
     fi
     {
-        mkdir -p "$mp"
-        mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse "$mp" || {
-            mammon_log "$log" "FAILED: kernel refused the fuse mount at $mp"
+        # A mount needs a directory that exists in the FUSE view, and inside the
+        # emulated tree one exists there as soon as it exists in the lower tree:
+        # MediaProvider resolves LOOKUP with lstat(2) on the lower path, with no
+        # database row and no scan involved.
+        if [ -n "$lower" ] && ! mkdir -p "$lower"; then
+            mammon_log "$log" "FAILED: cannot create the lower directory $lower"
+            return 0
+        fi
+        # A routed target is a path in the FUSE view, so creating it THERE would force
+        # the daemon's 0775 ownership and need the daemon up; the lower mkdir above has
+        # already made it appear. Only a non-routed mountpoint is created directly, and
+        # unchecked its failure would surface below as "kernel refused the fuse mount".
+        if [ -z "$lower" ] && ! mkdir -p "$target"; then
+            mammon_log "$log" "FAILED: cannot create the mountpoint $target"
+            return 0
+        fi
+        mount -t fuse -o fd=3,rootmode=40000,user_id=0,group_id=0,allow_other /dev/fuse "$target" || {
+            mammon_log "$log" "FAILED: kernel refused the fuse mount at $target"
             return 0
         }
         if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi
@@ -285,10 +629,16 @@ mammon_automount_main() {
             sleep 1
         done
         if tail -c +"$((mark + 1))" "$log" 2>/dev/null | grep -q 'serving '; then
-            mammon_log "$log" "MOUNTED: $host:$port$export_path at $mp via fuse (pid $D)"
+            # Propagation is a kernel property of the peer group: if the copy never
+            # appeared, the derivation was wrong and calling this a success would
+            # hide that from everyone.
+            if [ "$visible" != "$target" ] && ! mammon_mounted_at "$visible"; then
+                mammon_log "$log" "FAILED: mount at $target never propagated to $visible; $(mammon_teardown "$target")"
+                return 0
+            fi
+            mammon_log "$log" "MOUNTED: $host:$port$export_path at $visible via fuse (pid $D)"
         else
-            umount -l "$mp" 2>/dev/null
-            mammon_log "$log" "FAILED: daemon died or never served; unmounted $mp"
+            mammon_log "$log" "FAILED: daemon died or never served; $(mammon_teardown "$target")"
         fi
     } 3<>"$fuse_dev"
 }

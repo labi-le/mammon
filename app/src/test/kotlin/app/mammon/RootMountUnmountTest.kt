@@ -78,4 +78,62 @@ class RootMountUnmountTest {
         assertEquals(RootMount.State.MOUNTED, result.stateAfter)
         assertEquals("nfs", result.fsType)
     }
+
+    /**
+     * The routing read precedes every unmount, and on a phone without root it fails as
+     * SU_TIMED_OUT_CODE after SU_TIMEOUT_SECONDS. A literal-path fallback then spawns a
+     * second su that cannot succeed either, so the Unmount button held both buttons
+     * disabled for 60 s instead of 30 and still reported a umount error rather than root.
+     */
+    @Test fun `an unmount that cannot get su returns the root verdict without a second spawn`() {
+        val spawned = mutableListOf<String>()
+
+        val result = RootMount.unmount("/storage/emulated/0/nfs") { script ->
+            spawned += script
+            RootMount.SuResult(124, null, "su timed out")
+        }
+
+        assertEquals(listOf("cat /proc/1/mountinfo"), spawned)
+        assertFalse(result.ok)
+        assertEquals(RootMount.MountDiagnosis.NO_ROOT, result.diagnosis)
+        assertFalse("the message must name root, not umount: ${result.message}", result.message.contains("umount"))
+    }
+
+    /** Only the TOOL being absent short-circuits. A path refusal is decided before any
+     *  su runs, and the mount it names may still be standing from another entrance. */
+    @Test fun `a path the router refuses is still unmounted literally`() {
+        val spawned = mutableListOf<String>()
+
+        val result = RootMount.unmount("/data/media/0/nfs") { script ->
+            spawned += script
+            RootMount.SuResult(0, unmounted, "")
+        }
+
+        assertEquals(listOf(RootMount.unmountScript("/data/media/0/nfs")), spawned)
+        assertTrue(result.ok)
+        assertNull("a literal unmount is not routed", result.appVisible)
+    }
+
+    /** The two spawns a routed unmount really needs, and the master path in the second:
+     *  a slave never propagates to its master, so the view-side umount withdraws nothing. */
+    @Test fun `a routed unmount reads the table once and umounts the master path`() {
+        val mountinfo = """
+            2860 918 0:122 / /mnt/user/0/emulated rw,relatime shared:805 - fuse /dev/fuse rw,user_id=0
+            2890 957 0:122 / /storage/emulated rw,relatime master:805 - fuse /dev/fuse rw,user_id=0
+        """.trimIndent()
+        val spawned = mutableListOf<String>()
+
+        val result = RootMount.unmount("/storage/emulated/0/nfs") { script ->
+            spawned += script
+            RootMount.SuResult(0, if (spawned.size == 1) mountinfo else unmounted, "")
+        }
+
+        assertEquals(
+            listOf("cat /proc/1/mountinfo", RootMount.unmountScript("/mnt/user/0/emulated/0/nfs")),
+            spawned,
+        )
+        assertTrue(result.ok)
+        assertEquals("unmounted /storage/emulated/0/nfs", result.message)
+        assertEquals("/storage/emulated/0/nfs", result.appVisible)
+    }
 }

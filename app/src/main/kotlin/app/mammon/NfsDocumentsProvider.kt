@@ -18,6 +18,7 @@ import java.io.FileNotFoundException
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -44,6 +45,7 @@ class NfsDocumentsProvider : DocumentsProvider() {
 
     /** Pumps are bounded so one misbehaving client cannot monopolize IO threads;
      *  residual leak: a client holding its fd open keeps its pump alive. */
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val pumpScope = CoroutineScope(Dispatchers.IO.limitedParallelism(4))
 
     override fun onCreate(): Boolean = true

@@ -92,7 +92,8 @@ object NfsScanner {
         val links = cm.getLinkProperties(cm.activeNetwork) ?: return null
         for (la in links.linkAddresses) {
             val addr = la.address
-            if (addr is Inet4Address) return addr.hostAddress to la.prefixLength
+            val host = addr.hostAddress ?: continue
+            return host to la.prefixLength
         }
         return null
     }

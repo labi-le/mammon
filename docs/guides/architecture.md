@@ -70,6 +70,99 @@ rung 3 needs no NFS support in the kernel at all, only `/dev/fuse` and root — 
 the whole reason it exists. One NFS implementation now backs both surfaces: the daemon
 carries no second client.
 
+Ahead of the ladder sits one decision that is not a rung: WHERE a mount inside shared
+storage has to be made. `/storage/emulated` — the path every app means by shared storage
+— is normally a SLAVE of its propagation peer group, so it receives mounts and sends
+none: a mount made there is visible only to the namespace that made it, which is why
+mammon used to refuse that whole tree outright. But the same fuse device is also mounted
+at that group's shared MASTER, `/mnt/user/<u>/emulated` on a stock tree, and the kernel
+replicates a mount made there into every slave in the group. That is not a trick found
+at the edges: it is how vold's own `Android/data` and `Android/obb` mounts get INSIDE
+the emulated tree, so an ext4 mount below the emulated view is stock Android rather than
+something new — and also why `Android/` is refused by name: vold mounts there already,
+and two owners for one subtree is not a fight worth having. The tree root itself is
+refused for the plainer reason that mounting over all of shared storage would hide every
+app's files. `EmulatedMount` therefore derives the master from `/proc/1/mountinfo` per
+device — never a literal, since that path varies by OEM, by user profile and by release
+— mounts there, and reports the `/storage/emulated/<u>/<name>` the user can actually
+open. That `<u>` is COPIED out of the request, never interpreted:
+`EmulatedMount.recognize` gates the component with `mediaId.any { it !in '0'..'9' }` and
+then keeps it VERBATIM, because `mammon_route_recognize` gates the same component with
+`case $mid in '' | *[!0-9]*)` and re-emits it unchanged. The class is spelled `'0'..'9'`
+rather than `Char.isDigit` deliberately, since that predicate spans Unicode digits the
+shell's `[!0-9]` refuses. Parsing the component to an `Int`, which the app did until
+this round, made ONE saved pref mean two different mounts on one phone:
+`/storage/emulated/00/nfs` routed to `.../0/nfs` from the button and to `.../00/nfs` at
+boot, `010` retargeted the app into work-profile 10's storage while the module stayed on
+`010`, and `2147483648` overflowed `toIntOrNull` to null, so the app refused a path the
+module mounted. The `<u>` of the MASTER path is a different component again — it comes
+from the mountinfo line, not from the request — so `/storage/emulated/00/nfs` mounts at
+`/mnt/user/0/emulated/00/nfs`. Unmount goes to the master path for the same one-way
+reason: a slave does not propagate to its master, so a `umount` inside the `/storage`
+view would leave the real mount standing. A path the routing REFUSES is unmounted
+literally instead, and that refusal is decided before any su is spawned, so it knows
+nothing about what is mounted there: a mount some other entrance left at that path can
+still be standing (`RootMount.unmount`). Among the propagation tags the
+`propagate_from:` group is tried FIRST and `master:` only as a fallback, never as one
+set: `master:` names the IMMEDIATE master's group, which `get_dominating_id` may leave
+with no line visible under the reading root at all, while `propagate_from:` names the
+nearest master group that is reachable — keying on `master:` alone would refuse on a
+device where the route works. Trying them in that order also takes the choice away from
+mountinfo line order, which must decide nothing (`EmulatedMount.mountSite`;
+`mammon_emulated_master` in `magisk-module/fslib.sh`).
+
+A view carrying a bare `shared:N` and neither tag above it is mounted WHERE IT STANDS
+instead (the `MountSite.InPlace` branch of `EmulatedMount.mountSite`; the bare-`shared:`
+tail of `mammon_emulated_master`, which prints `/storage/emulated` itself): it is a
+sender in group N, so a mount made in `/storage/emulated` itself reaches every peer and
+slave of that group. The app tries there rather than refusing because the two answers
+are not symmetric — the mount is verified at the app-visible path afterwards and
+withdrawn when it did not propagate, so a wrong attempt corrects itself, while a refusal
+is terminal and tells the user his phone cannot do something it can. A line carrying
+`shared:N` AND `master:M` still takes the master route, deliberately: it sends into N
+but receives from M, and a mount made in place would miss everything M feeds. When the
+master route finds no candidate the answer is the refusal below, never a fall back to in
+place.
+
+Three verdicts come out of this seam and each says something different;
+`RootMount.MountDiagnosis` carries the whole set they belong to. A view with no shared
+peer is `EMULATED_NO_SHARED_PEER` — no path exists where a mount would become visible,
+so there is nothing to try. A mount that landed on the master and never appeared in the
+view is torn down through the same su ladder that made it and reported as
+`EMULATED_NOT_PROPAGATED` (`RootMount.mounted`): it is NOT left standing with the user
+sent to a root shell, which is what the app did and what this guide said. The reason is
+not that the path is out of reach — the failure message names the master path and the UI
+prints it, and Unmount reaches it, because `RootMount.unmount` resolves the saved
+mountpoint through the same `resolveTarget` and umounts what it routes to. The reason is
+that the run FAILED, and a failed run that leaves mammon's own mount up — with, on the
+FUSE rung, a daemon that only a `umount` stops — bills the user for a path he never got.
+A teardown that itself failed then needs its own value, `EMULATED_NOT_PROPAGATED_STUCK`,
+and its own message naming the Unmount button, which is honest advice precisely because
+that button routes to the same master path and really can clear it — "so it was removed
+again" is a claim, and claiming a removal we did not achieve is exactly the
+true-when-written defect this project keeps producing. One enum value buys a sentence
+that stays true when `umount` loses. The consequence for the shape of the app is that
+the root card is no longer a root-only curiosity: a mount it makes now lands where any
+file manager can open it, which before was the SAF provider's sole claim. Read
+"Verification status" below before trusting any of this on a device: none of it has
+executed on Android, and the mount table the derivation was read off came from a
+waydroid Android 13 instance with SELinux disabled.
+
+The mountpoint directory for such a mount is created in the LOWER tree,
+`/data/media/<u>/<name>`, not through the view. Going through the view would also work —
+MediaProvider skips its own permission check for uid 0 and root passes
+(`MediaProviderWrapper.cpp:53-55`, `FuseDaemon.cpp:810-812`, AOSP `android-15.0.0_r1`) —
+but it forces mode 0775 on what it creates (`FuseDaemon.cpp:1247`), needs the
+MediaProvider daemon already up, and lives in a Mainline module that updates out of step
+with the platform. Creating the directory below the daemon has none of those costs and
+none in latency either: MediaProvider answers a LOOKUP by `lstat(2)` on the lower path
+and returns for a directory before it consults JNI or its database
+(`FuseDaemon.cpp:552-556`, `577-581`), a miss installs no negative dentry to invalidate
+(`FuseDaemon.cpp:957-961`), and readdir falls back to the lower filesystem
+(`MediaProviderWrapper.cpp:381-393`). The name is therefore there for the mount
+immediately, which is why no scan trigger, no MediaStore poke and no retry loop appears
+anywhere in this path — anything of that kind would be cargo.
+
 A failure that exhausts the ladder is separated into the causes that need different
 fixes: no usable `su`; a kernel that cannot give us FUSE at all (`/dev/fuse` would not
 open, or `/proc/filesystems` provably has no `fuse` line, so no rung is left); a FUSE mount the
@@ -77,7 +170,10 @@ kernel accepted whose daemon then failed to serve; and everything else.
 The `/proc/filesystems` half of that distinction is read in the same root context as
 the mount itself (the scripts dump it after the mounts), because the unprivileged app
 process can be denied the same read; when even the root read comes back empty the
-verdict degrades to "unknown", never to "unsupported".
+verdict degrades to "unknown", never to "unsupported". The three emulated verdicts above
+sit outside this split by construction: one is decided before the ladder is entered and
+the other two after a rung already succeeded, so none of them is ever inferred from an
+exhausted ladder.
 
 Since v0.5.1 every rung first tries to load its filesystem's modules
 (`modprobe nfs`, `nfsv3`, `nfsv4` on the kernel rungs; `modprobe fuse` on the FUSE
@@ -110,6 +206,62 @@ default behind a flag file): it borrows clifforama/multi-mount's pattern —
 config-driven boot mounts with a bounded network wait — but rides the app's
 FUSE daemon instead of kernel nfs, so it works on kernels where nfs does not
 exist and fuse does.
+
+Its automount carries the same emulated-storage routing as the app, and must: a share
+that comes back at boot is exactly the one a user wants to find in a file manager. The
+module needs one thing the app does not — patience. MediaProvider serves the emulated
+view and starts long after `post-fs-data`, so at `late_start` the master peer can simply
+be absent yet; the derivation is retried inside the SAME bounded window the module
+already waits for CE storage and the network in (`mammon_route_wait`, spending
+`mammon_automount_main`'s own `$i of $tries` budget rather than opening a second one),
+never behind a fixed sleep, so a device that is slow to unlock still gets its mount. It
+also needs refusals the app can never exercise: the module reads the saved mountpoint
+straight out of `shared_prefs`, which the app validates before writing but a hand edit
+does not. A `.` or `..` component is therefore rejected in the shell too, by the `*/./*`
+and `*/../*` cases in `mammon_route_recognize` (`fslib.sh:380-382`) — without that,
+`/sdcard/../../data/local/nfs` would become a root `mkdir -p` and a FUSE mount outside
+shared storage on every boot. The saved spelling is also reduced to ONE spelling before
+either decision is taken, by the same three operations `MountpointPolicy.normalize`
+applies and in the same order — strip surrounding whitespace, collapse `//` runs, drop a
+trailing `/` (`fslib.sh:468-471`). The order is load-bearing: `normalize("/x/nfs/ ")` is
+`/x/nfs`, and would be `/x/nfs/` if the whitespace went last. So is each operation.
+Without the collapse, `//data/media/0/nfs` left the routing as "not emulated" and missed
+the `/data/media` refusal it should have hit, because that refusal matches literal text
+while `mammon_route_recognize` normalizes internally. Without the whitespace strip,
+`/storage/emulated/0/Android ` is not the component `Android`, so the module routed a
+path the app answers `RESERVED_NAME` for — the vold-owned refusal missed by one
+character. One saved value yielding two spellings is the same defect class as one media
+id yielding two: both entrances have to agree on the exact characters, not on the intent.
+What is reduced is the DECISION and never the mount target: a path the routing declines
+is mounted at the saved spelling verbatim (`fslib.sh:495-496`), which is what
+`RootMount.resolveTarget` does too, handing `EmulatedMount.route` its untouched argument
+and building the non-emulated `Target` out of that same unchanged string. That is
+precisely why both sides re-ask absoluteness of the SAVED spelling on that branch, and
+only on that branch: the module at `fslib.sh:545-548`, the app as
+`MountpointPolicy.refusalFor`'s `NOT_ABSOLUTE`. Without it `" /mnt/nas"` reached root as
+`mkdir -p ' /mnt/nas'`, resolved in the su shell's own working directory — the trimmed
+spelling passes every earlier check, and the untrimmed one is what gets mounted. A
+routed path needs no such guard: its target is derived from the reduced spelling, so
+how the pref was typed never reaches root, and `" /storage/emulated/0/nfs"` still
+routes on both sides. The app additionally refuses a saved `/`, which the module's
+`${mp%/}` already reduces to the empty string and rejects. It has to be
+once and only once on each side, because `normalize` is not idempotent — `"/x/nfs /"`
+reduces to `/x/nfs ` and only a second pass takes it to `/x/nfs`. The comment over that
+refusal now claims only what the two sides really share — the roots list, the
+component-boundary match, and the reduced spelling `isInStorageSurface` needs because it
+normalizes first (`fslib.sh:524-528`); a wider parity claim in a comment would still not
+be parity, and neither is one here: the two decisions have been measured against each
+other, the numbers live in the review record, and they are not yet identical. And the
+module verifies propagation before claiming anything: if the copy never appeared at the
+app-visible path, the master-side mount is torn down and the boot is logged as a failure
+(`fslib.sh:635-638`, a second `mammon_mounted_at` at the visible path before any MOUNTED
+line), because propagation is a kernel property of the peer group — a missing copy means
+the derivation was wrong, and a success line would hide that from the only person who
+could report it. That log line says "unmounted" only when `umount -l` actually returned
+0, and otherwise names the path as still mounted (`mammon_teardown`) — the same split
+the app draws between `EMULATED_NOT_PROPAGATED` and `EMULATED_NOT_PROPAGATED_STUCK`. At
+boot there is no Unmount button to point at, so a root shell is the honest advice there
+rather than the evasion it was on the screen.
 
 Since v0.6.0 the app carries this module inside its own APK: `packModuleZip` in
 `app/build.gradle.kts` packs the directory deterministically into an asset, and an
@@ -145,6 +297,12 @@ device to `/system/bin/mount` — is unavailable on Android in both halves:
 - No SELinux policy is shipped and none is needed: a Magisk root process runs in the
   unconstrained, permissive `magisk` domain, and `genfscon` labels every FUSE mount
   `u:object_r:fuse:s0`, which AOSP's `app.te` already grants every app domain access to.
+  That holds for a mount placed inside the emulated tree too, which is the case that
+  would have needed new policy if any did: `private/genfs_contexts:321` is the
+  `genfscon fuse / u:object_r:fuse:s0` line, `public/file.te:181` types `fuse` as a
+  `fusefs_type`, and the mount `neverallow` in `private/domain.te:1923-1939` exempts
+  `fusefs_type` explicitly (AOSP `android-15.0.0_r1`). No `.te` file, no context= mount
+  option, nothing.
 
 The rejected alternative is recorded because it is what direction B originally proposed:
 a prebuilt `sahlberg/fuse-nfs` on libnfs, cross-compiled with the NDK. libnfs implements
@@ -256,6 +414,68 @@ sit between them — a leading flag exits before main(), a trailing one leaks in
 daemon's argv, where it is taken for the optional identity field and reported as
 unparseable.
 
+The emulated-storage routing is the least-executed thing described in this guide:
+NOTHING in it has run on Android. Its whole verdict is JVM tests and shell dry-runs on a
+Linux host. `EmulatedMountTest` drives the routing rule against captured mountinfo text
+and, since the first review round, the propagation verdict as well: `RootMount.mounted`
+is called with a mount table showing the master path only and a teardown function
+injected, which is the only way a JVM test can reach that verdict at all — a real
+teardown spawns `su`. Three cases carry it, named for what they pin: "a mount that never
+propagated is torn down and reported as removed", "a teardown that fails is not reported
+as a removal", and "an unreadable mount table leaves a routed mount unknown, never
+not-propagated", the last asserting that no teardown is even attempted. The same class
+pins the refusal seam from the non-UI side ("a storage-surface path is refused by mount
+itself, not only by the field"), and `MountpointPolicyTest` pins the composition it
+calls. `MountpointVerbatimTargetTest` pins the other half of that seam, the branch that
+hands the saved spelling to root untouched: it drives `RootMount.mount` through the
+same injected-`su` seam `unmount` uses and asserts on the SCRIPT, which is where a
+relative `mkdir -p` is visible at all, and it runs `fslib.sh` for the module's answer
+to every one of those spellings rather than predicting it. `FslibAutomountFuseFdTest` runs the module's real `fslib.sh` under mksh against a
+stubbed `mount`, and every shell case is `assumeTrue`-gated on mksh being on PATH. This
+repository's `shell.nix` lists mksh for exactly that reason, so under the documented
+`nix-shell --run './gradlew ...'` route the cases run; invoke Gradle outside that shell
+and they SKIP instead, and a green suite there has proven nothing about the shell half.
+Read the skip count before reading a pass as coverage. Beyond what the suite pins, the
+routing helpers of that same script were dry-run by hand on a Linux host under mksh,
+dash and busybox sh, agreeing in all three on the octal un-escaping, on rejecting a `..`
+component, on refusing an empty mount table, on routing in place for a bare `shared:`,
+and on preferring the `propagate_from` candidate over the `master` one; only the mksh
+run is pinned by a test, the other two leave no artefact in this repository. The
+media-id claim above was taken the same way and is worth no more than that: with a
+synthetic two-line mountinfo, the module's routing put `00`, `010` and `2147483648`
+unchanged into `mammon_route_at`, `mammon_route_lower` and `mammon_route_visible`, and
+refused `+0` — under `/bin/sh`, which was bash in sh mode, since that run was taken
+outside `nix-shell` and mksh was therefore not on PATH. Nothing in it is an mksh result.
+Mutation checks belong to the review loop and are taken in a `/tmp` export, whose
+figures deliberately never reach a document — `docs/guides/workflow.md` says why.
+Against an Android device the score is zero: no phone, rooted or not, has executed one
+line of this path.
+
+The mount table the rule was derived from was read on a WAYDROID Android 13 instance
+with SELinux DISABLED, not on a phone: there `/storage/emulated` carried `master:805`
+while `/mnt/user/0/emulated` carried `shared:805` over the same fuse device, and vold's
+`Android/data` ext4 mount appeared once under each of the two trees. That is evidence
+for the SHAPE of the tree, not a measurement of any device: no rooted phone has mounted
+anything through this path, no propagated mount has been observed appearing in a running
+app's view, the app-visible status line and all three emulated diagnoses have never been
+read off a screen, and because SELinux was disabled on that instance even the "no policy
+needed" bullet above is source reading rather than observation. The in-place route is
+one step further out again: no mount table recorded in this project, waydroid's
+included, shows a `/storage/emulated` carrying a bare `shared:` — the only place that
+shape exists is a fixture written by hand out of the captured one, so routing there
+rather than refusing rests on the reasoning above and not on a sighting. What carries the reasoning instead is AOSP
+`android-15.0.0_r1` and Linux 6.6: propagation reaching an ALREADY-RUNNING app
+(`Zygote.cpp:2351` marks the app root `MS_SLAVE|MS_REC`, and a later per-app `unshare`
+keeps the master link — `fs/namespace.c:1211-1213`), the lower-tree directory being
+visible through the view immediately (`FuseDaemon.cpp:552-556`, `577-581`), and the
+mountinfo field order the parser depends on (`fs/proc_namespace.c` `show_mountinfo`,
+which is also why a line can be skipped entirely and a `parent_id` can reference a line
+that is not there). On the first rooted phone this runs on, the diagnosis the mount
+reports is the thing to read: `EMULATED_NO_SHARED_PEER`, `EMULATED_NOT_PROPAGATED` and
+`EMULATED_NOT_PROPAGATED_STUCK` exist precisely so a wrong derivation names itself
+instead of arriving as a generic failure — and the last of the three is the one to hope
+never appears, since it is the only arm that leaves a mount standing.
+
 What follows is the original decision input, kept because it explains the shape of what
 was built and which constraints each direction was chosen against.
 
@@ -313,8 +533,9 @@ with `sshfs`.
   cannot — open `/dev/fuse` and call `mount(2)`. Root is still required; that half never
   went away. Status above carries why the inversion is necessary, why the
   prebuilt-binary route was rejected rather than deferred, which narrowings the Kotlin
-  daemon accepts, and the fact that the rooted-phone chain was first proven on a real
-  device in v0.6.6.
+  daemon accepts, where a mount inside shared storage is really made and why the path
+  the user is shown is usually not the path it was mounted at, and the fact that the
+  rooted-phone chain was first proven on a real device in v0.6.6.
 - **Still not built from this shape:** the foreground service and the boot receiver. The
   mount is started one-shot from the activity, and the daemon is a detached root
   `app_process` rather than a service the app owns, so nothing restarts it after a reboot
@@ -343,4 +564,11 @@ its own and bundles no prebuilt binary for any direction. Status explains why th
 rung needed neither.
 
 Keep this guide's Status section, `routes.md` and `README.md` in step with the code in
-the same change — a guide describing a dead option as live is worse than no guide.
+the same change — a guide describing a dead option as live is worse than no guide. Cite
+in-repo code by SYMBOL wherever the symbol name is enough to find the construct: seven
+of the eleven in-repo line ranges this guide carried into the third review round pointed
+at the wrong construct or straddled its boundary, every one of them from edits made
+ABOVE the cited lines, so a range is now spent only where the exact lines are the
+argument, and then with the construct quoted beside it so the number is checkable at a
+glance. Citations into AOSP and the kernel keep their ranges: they are pinned to
+`android-15.0.0_r1` and Linux 6.6, which this repository cannot move.

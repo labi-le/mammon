@@ -155,8 +155,9 @@ class MainActivity : AppCompatActivity() {
         val aux = AuthIdentity.auxOrNull(auxGidsEdit.text?.toString().orEmpty())
         if (aux == null) reject(auxGidsLayout, R.string.err_field_aux_gids)
 
-        // A field the user was just told is wrong must not be written anyway: saving a
-        // coerced value is how a bad uid survives a visible complaint about it.
+        // A field the user was just told is wrong must not be written anyway: the port
+        // is the one that gets coerced to its default while being rejected, and saving
+        // that is how a rejected value survives the visible complaint about it.
         if (!valid || uid == null || gid == null || aux == null) {
             status.setText(R.string.err_bad_config)
             return
@@ -220,18 +221,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onMount(doMount: Boolean) {
-        // Trailing slashes are stripped once here so /proc/1/mounts exact-match sees
-        // the same string the mount script and the parser use.
+        // Trimmed and stripped of a trailing /, NOT MountpointPolicy.normalize, which
+        // decides but never rewrites a target: a typed /mnt//nas is mounted verbatim,
+        // /proc/1/mounts records /mnt/nas, so the exact match misses and a successful
+        // mount reports itself as not visible. The trim is why the seam's
+        // not-absolute-as-saved refusal can only ever be reached by a hand-edited pref.
         val mp = (mountpointEdit.text?.toString() ?: "").trim().trimEnd('/').ifEmpty { "/" }
-        if (!mp.startsWith("/") || mp == "/") {
-            mountpointLayout.error = getString(R.string.err_bad_mountpoint_absolute)
-            return
-        }
-        // Android's emulated storage is unmountable by construction (tmpfs /storage,
-        // MediaProvider FUSE over /storage/emulated, /sdcard a symlink into it), so it
-        // is refused here before any su call — the SAF card is the app-visible route.
-        if (MountpointPolicy.isUnmountable(mp)) {
-            mountpointLayout.error = getString(R.string.err_bad_mountpoint_storage)
+        val fieldError = mountpointFieldError(mp)
+        if (fieldError != null) {
+            mountpointLayout.error = getString(fieldError)
             return
         }
         prefs.lastMountpoint = mp
@@ -265,11 +263,20 @@ class MainActivity : AppCompatActivity() {
                 MOUNT_IN_FLIGHT.set(false)
                 mountBtn.isEnabled = true
                 unmountBtn.isEnabled = true
+                // Reported at the path the user can browse, not the one it was made on.
+                val shown = result.appVisible ?: mp
+                val shared = result.appVisible != null
                 mountStatus.text = when {
                     !result.ok -> mountFailureText(result)
-                    result.fsType == FUSE_FS_TYPE -> getString(R.string.mounted_state_fuse, mp)
-                    result.fsType != null ->
-                        getString(R.string.mounted_state, result.fsType, mp)
+                    result.fsType == FUSE_FS_TYPE -> getString(
+                        if (shared) R.string.mounted_state_shared_fuse else R.string.mounted_state_fuse,
+                        shown,
+                    )
+                    result.fsType != null -> getString(
+                        if (shared) R.string.mounted_state_shared else R.string.mounted_state,
+                        result.fsType,
+                        shown,
+                    )
                     state == RootMount.State.UNKNOWN -> getString(R.string.unknown_state)
                     doMount -> getString(R.string.not_mounted_after_mount)
                     else -> getString(R.string.not_mounted_state)
@@ -278,7 +285,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** A failed unmount carries no diagnosis, so its own message stays the fallback. */
+    /** Path-shaped verdicts only: whether this device's emulated storage can carry a
+     *  visible mount needs root, so that verdict arrives as a mount diagnosis instead.
+     *  Every one of them comes from the seam RootMount uses, absoluteness included —
+     *  the field owning a rule of its own is what let a hand-edited pref past it.
+     *  One string serves both spellings of the same fault, as its own text says. */
+    private fun mountpointFieldError(mp: String): Int? = when (MountpointPolicy.refusalFor(mp)) {
+        EmulatedMount.Refusal.IS_TREE_ROOT -> R.string.err_bad_mountpoint_tree_root
+        EmulatedMount.Refusal.RESERVED_NAME -> R.string.err_bad_mountpoint_android_dir
+        EmulatedMount.Refusal.NOT_EMULATED -> R.string.err_bad_mountpoint_storage
+        EmulatedMount.Refusal.HAS_DOT_COMPONENT -> R.string.err_bad_mountpoint_dot_component
+        EmulatedMount.Refusal.NOT_ABSOLUTE,
+        EmulatedMount.Refusal.IS_FILESYSTEM_ROOT,
+        -> R.string.err_bad_mountpoint_absolute
+        EmulatedMount.Refusal.NO_SHARED_PEER, null -> null
+    }
+
+    /** A failed unmount carries a diagnosis only when the routing read decided it — the
+     *  NO_ROOT short-circuit — so every other umount error still falls to its own message. */
     private fun mountFailureText(result: RootMount.Result): String = when (result.diagnosis) {
         RootMount.MountDiagnosis.NO_ROOT -> getString(R.string.err_mount_no_root)
         RootMount.MountDiagnosis.KERNEL_LACKS_FUSE -> getString(R.string.err_mount_kernel_no_fuse)
@@ -286,6 +310,12 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.err_mount_module_files, result.message)
         RootMount.MountDiagnosis.FUSE_DAEMON_FAILED ->
             getString(R.string.err_mount_fuse_daemon, result.message)
+        RootMount.MountDiagnosis.EMULATED_NO_SHARED_PEER ->
+            getString(R.string.err_mount_no_emulated_route)
+        RootMount.MountDiagnosis.EMULATED_NOT_PROPAGATED ->
+            getString(R.string.err_mount_not_propagated, result.message)
+        RootMount.MountDiagnosis.EMULATED_NOT_PROPAGATED_STUCK ->
+            getString(R.string.err_mount_not_propagated_stuck, result.message)
         RootMount.MountDiagnosis.GENERIC -> getString(R.string.err_mount_failed, result.message)
         null -> result.message
     }

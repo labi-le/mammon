@@ -1,226 +1,301 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <LinearLayout
+    <com.google.android.material.appbar.AppBarLayout
+        android:id="@+id/app_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+        app:liftOnScroll="true">
 
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/saf_card"
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content">
+            android:layout_height="?attr/actionBarSize"
+            app:title="@string/app_name" />
+    </com.google.android.material.appbar.AppBarLayout>
 
-            <LinearLayout
+    <!-- MainActivity pads this view with the bottom window inset; without
+         clipToPadding=false that padding would clip the scrolled content. -->
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/scroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipToPadding="false"
+        android:fillViewport="true"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+        <LinearLayout
+            android:id="@+id/content"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/spacing_screen">
+
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/saf_card"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/saf_title"
-                    android:textAppearance="?attr/textAppearanceTitleMedium" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="@string/saf_caption"
-                    android:textAppearance="?attr/textAppearanceBodySmall"
-                    android:textColor="?android:attr/textColorSecondary" />
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/host_layout"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="@string/hint_host">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/host"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="textUri" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/scan_button"
-                    style="@style/Widget.Material3.Button.TextButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="end"
-                    android:text="@string/scan_button" />
+                android:layout_height="wrap_content">
 
                 <LinearLayout
-                    android:id="@+id/scan_results"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:visibility="gone" />
+                    android:padding="@dimen/spacing_card">
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/export_layout"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="@string/hint_export">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:accessibilityHeading="true"
+                        android:text="@string/saf_title"
+                        android:textAppearance="?attr/textAppearanceTitleMedium"
+                        tools:targetApi="28" />
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/export"
+                    <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="textUri" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="@dimen/spacing_tight"
+                        android:text="@string/saf_caption"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:textColor="?android:attr/textColorSecondary" />
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/port_layout"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="@string/hint_port">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/port"
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/host_layout"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="number" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:hint="@string/hint_host">
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/uid_layout"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="@string/hint_uid">
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/host"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:imeOptions="actionNext"
+                            android:importantForAutofill="no"
+                            android:inputType="textUri"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/uid"
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/scan_button"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="end"
+                        android:layout_marginTop="@dimen/spacing_tight"
+                        android:text="@string/scan_button" />
+
+                    <com.google.android.material.chip.ChipGroup
+                        android:id="@+id/scan_results"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="number" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="@dimen/spacing_tight"
+                        android:visibility="gone" />
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/gid_layout"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="@string/hint_gid">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/gid"
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/export_layout"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="number" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:hint="@string/hint_export">
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/aux_gids_layout"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="@string/hint_aux_gids">
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/export"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:imeOptions="actionNext"
+                            android:importantForAutofill="no"
+                            android:inputType="textUri"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/aux_gids"
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/port_layout"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="text" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:hint="@string/hint_port">
 
-                <Button
-                    android:id="@+id/save"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/save" />
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/port"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:imeOptions="actionNext"
+                            android:importantForAutofill="no"
+                            android:inputType="number"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-                <TextView
-                    android:id="@+id/status"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:accessibilityLiveRegion="polite"
-                    android:textIsSelectable="true" />
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/uid_layout"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:hint="@string/hint_uid">
 
-                <Button
-                    android:id="@+id/open_files"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/open_files" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/uid"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:imeOptions="actionNext"
+                            android:importantForAutofill="no"
+                            android:inputType="number"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/root_card"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp">
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/gid_layout"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:hint="@string/hint_gid">
 
-            <LinearLayout
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/gid"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:imeOptions="actionNext"
+                            android:importantForAutofill="no"
+                            android:inputType="number"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/aux_gids_layout"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:hint="@string/hint_aux_gids">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/aux_gids"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:imeOptions="actionDone"
+                            android:importantForAutofill="no"
+                            android:inputType="text"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/save"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:text="@string/save" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/open_files"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_tight"
+                        android:text="@string/open_files" />
+
+                    <TextView
+                        android:id="@+id/status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:accessibilityLiveRegion="polite"
+                        android:textAppearance="?attr/textAppearanceBodyMedium"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textIsSelectable="true" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/root_card"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/root_title"
-                    android:textAppearance="?attr/textAppearanceTitleMedium" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="@string/root_caption"
-                    android:textAppearance="?attr/textAppearanceBodySmall"
-                    android:textColor="?android:attr/textColorSecondary" />
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/mountpoint_layout"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="@string/hint_mountpoint">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/mountpoint"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="textUri" />
-                </com.google.android.material.textfield.TextInputLayout>
+                android:layout_marginTop="@dimen/spacing_group">
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal">
+                    android:orientation="vertical"
+                    android:padding="@dimen/spacing_card">
 
-                    <Button
-                        android:id="@+id/mount_button"
-                        android:layout_width="0dp"
+                    <TextView
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="@string/mount" />
+                        android:accessibilityHeading="true"
+                        android:text="@string/root_title"
+                        android:textAppearance="?attr/textAppearanceTitleMedium"
+                        tools:targetApi="28" />
 
-                    <Button
-                        android:id="@+id/unmount_button"
-                        android:layout_width="0dp"
+                    <TextView
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="@string/unmount" />
+                        android:layout_marginTop="@dimen/spacing_tight"
+                        android:text="@string/root_caption"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:textColor="?android:attr/textColorSecondary" />
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/mountpoint_layout"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:hint="@string/hint_mountpoint">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/mountpoint"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:imeOptions="actionDone"
+                            android:importantForAutofill="no"
+                            android:inputType="textUri"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/mount_button"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/mount" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/unmount_button"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/spacing_tight"
+                            android:layout_weight="1"
+                            android:text="@string/unmount" />
+                    </LinearLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/install_module_button"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_tight"
+                        android:text="@string/install_module" />
+
+                    <TextView
+                        android:id="@+id/mount_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/spacing_field"
+                        android:accessibilityLiveRegion="polite"
+                        android:textAppearance="?attr/textAppearanceBodyMedium"
+                        android:textColor="?attr/colorOnSurfaceVariant"
+                        android:textIsSelectable="true" />
                 </LinearLayout>
-
-                <Button
-                    android:id="@+id/install_module_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/install_module" />
-
-                <TextView
-                    android:id="@+id/mount_status"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:accessibilityLiveRegion="polite"
-                    android:textIsSelectable="true" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-    </LinearLayout>
-</ScrollView>
+            </com.google.android.material.card.MaterialCardView>
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

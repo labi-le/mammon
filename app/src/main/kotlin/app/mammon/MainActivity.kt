@@ -1,19 +1,25 @@
 package app.mammon
 
 import android.content.ActivityNotFoundException
-import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Rect
 import android.net.ConnectivityManager
-import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.runBlocking
@@ -52,11 +58,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var mountStatus: TextView
 
     private lateinit var scanButton: MaterialButton
-    private lateinit var scanResults: LinearLayout
+    private lateinit var scanResults: ChipGroup
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        setSupportActionBar(findViewById(R.id.toolbar))
+        applyEdgeToEdgeInsets()
+        applyBarIconAppearance()
 
         prefs = Prefs(this)
         status = findViewById(R.id.status)
@@ -116,6 +125,56 @@ class MainActivity : AppCompatActivity() {
         if (prefs.spec() != null && !PROBE_IN_FLIGHT.get()) {
             status.setText(R.string.checking_saved)
             probeSavedConfig()
+        }
+    }
+
+    /** targetSdk 35 draws edge-to-edge unconditionally and stops offsetting the content
+     *  for the system bars and the keyboard, so the app has to re-add that space. */
+    private fun applyEdgeToEdgeInsets() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val appBar = findViewById<View>(R.id.app_bar)
+        val scroll = findViewById<View>(R.id.scroll)
+        // Read once: reading the live padding inside the listener would compound the
+        // insets on every pass.
+        val appBarBase = Rect(appBar.paddingLeft, appBar.paddingTop, appBar.paddingRight, appBar.paddingBottom)
+        val scrollBase = Rect(scroll.paddingLeft, scroll.paddingTop, scroll.paddingRight, scroll.paddingBottom)
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root)) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            appBar.setPadding(
+                appBarBase.left + bars.left,
+                appBarBase.top + bars.top,
+                appBarBase.right + bars.right,
+                appBarBase.bottom,
+            )
+            scroll.setPadding(
+                scrollBase.left + bars.left,
+                scrollBase.top,
+                scrollBase.right + bars.right,
+                scrollBase.bottom + bars.bottom,
+            )
+            // Margin, not padding: NestedScrollView measures scroll-into-view against
+            // getHeight(); and setLayoutParams relayouts whether or not the value changed.
+            val lp = scroll.layoutParams as ViewGroup.MarginLayoutParams
+            if (lp.bottomMargin != ime) {
+                lp.bottomMargin = ime
+                scroll.layoutParams = lp
+            }
+            insets
+        }
+    }
+
+    /** In code rather than the theme because isAppearanceLightNavigationBars silently
+     *  no-ops below API 27, which would fork themes.xml across values-night and
+     *  values-v27 to say the same thing. */
+    private fun applyBarIconAppearance() {
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !night
+            isAppearanceLightNavigationBars = !night
         }
     }
 
@@ -410,10 +469,10 @@ class MainActivity : AppCompatActivity() {
             status.setText(R.string.scan_empty)
             return
         }
+        val inflater = LayoutInflater.from(this)
         for (host in found) {
-            val chip = MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle)
+            val chip = inflater.inflate(R.layout.item_scan_chip, scanResults, false) as Chip
             chip.text = host
-            chip.isAllCaps = false
             chip.setOnClickListener {
                 hostEdit.setText(host)
                 scanResults.removeAllViews()

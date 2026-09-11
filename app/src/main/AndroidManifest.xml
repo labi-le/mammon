@@ -11,8 +11,11 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.Mammon">
 
+        <!-- Panning instead of resizing would slide the edge-to-edge inset padding
+             off the top, putting the first card back under the status bar. -->
         <activity
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

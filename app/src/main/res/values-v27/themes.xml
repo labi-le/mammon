@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Overriding a style under a config qualifier replaces the whole item bag, so
+     this child restates nothing: every other item stays in the unqualified
+     Base.Theme.Mammon and cannot be dropped here. -->
+<resources>
+    <style name="Theme.Mammon" parent="Base.Theme.Mammon">
+        <!-- From API 27 windowLightNavigationBar exists, so MainActivity can
+             darken the nav-bar icons for the light canvas; the scrim the base
+             theme needs on API 26 is pure dimming from here on. -->
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

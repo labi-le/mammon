@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Mammon palette. Light values here; the night ramp mirrors them in
-         values-night/colors.xml. Accent tokens are mammon's purple-gold blend;
-         every other token follows the iOS grouped-canvas ramp. -->
+    <!-- Mammon palette. Light values here; the night ramp mirrors every token
+         of this palette block in values-night/colors.xml. Accent tokens are
+         mammon's purple-gold blend; every other token follows the iOS
+         grouped-canvas ramp. Tokens after the block are config-independent and
+         are deliberately declared only here. -->
     <color name="accent">#FF6B4FA1</color>
     <color name="ios_red">#FFFF3B30</color>
     <color name="label_secondary">#993C3C43</color>
@@ -16,6 +18,10 @@
     <color name="bg_dialog">#FFFFFFFF</color>
     <color name="bg_field">#FFE5E5EA</color>
     <color name="label">#FF000000</color>
+
+    <!-- Translucent black reads on both ramps, so a values-night duplicate would
+         only be a second place to keep in sync. -->
+    <color name="scrim_system_bar">#80000000</color>
 
     <color name="ic_launcher_background">#2D1B3D</color>
 </resources>

@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mammon</string>
+
+    <string name="saf_title">NFS share (SAF)</string>
+    <string name="saf_caption">Saved once, the share appears in any file manager.</string>
+    <string name="hint_host">Server host or IP</string>
+    <string name="hint_export">Export path, e.g. /export/data</string>
+    <string name="hint_port">Port (default 2049)</string>
+    <string name="hint_uid">User ID on the server (uid)</string>
+    <string name="hint_gid">Group ID on the server (gid)</string>
+    <string name="hint_aux_gids">Extra group IDs, comma-separated</string>
+    <string name="save">Save</string>
+    <string name="open_files">Open in Files</string>
+    <string name="saved_ok">Saved: %1$s</string>
+    <string name="checking_saved">Checking saved share…</string>
+    <string name="probing">Checking the share…</string>
+    <string name="probe_ok">Share reachable — ready to open.</string>
+    <string name="probe_fail">Share not reachable. Check host/export/network.</string>
+    <string name="scan_button">Find servers</string>
+    <string name="scan_empty">No servers found.</string>
+    <string name="scan_done">Servers found — tap one to fill.</string>
+    <string name="scan_no_network">Not on a local network — connect to Wi-Fi and try again.</string>
+    <string name="no_file_manager">No file manager found to open the share.</string>
+
+    <string name="root_title">Filesystem mount (kernel or FUSE, requires root)</string>
+    <string name="root_caption">A folder inside /storage/emulated/0 shows up in any file manager; /mnt/nas works too, but only root can reach it.</string>
+    <string name="hint_mountpoint">Mountpoint, e.g. /storage/emulated/0/nfs</string>
+    <string name="mount">Mount</string>
+    <string name="unmount">Unmount</string>
+    <string name="working">Working…</string>
+    <string name="install_module">Install module</string>
+    <string name="module_probe_working">Checking for the module…</string>
+    <string name="module_already_installed">Module already installed.</string>
+    <string name="module_probe_unavailable">Cannot check the installed module: no usable answer from su.</string>
+    <string name="module_chooser_title">Install with</string>
+    <string name="module_handed_off">Handed to the installer — finish it there. Mammon cannot see whether it succeeds.</string>
+    <!-- versionCodes are identifiers, not quantities, so they arrive rendered and format as %s: a %d followed by a word makes lint ask for a plural. -->
+    <string name="module_update_handed_off">Module versionCode %1$s installed, %2$s bundled — handed the update to the installer. Mammon cannot see whether it succeeds.</string>
+    <string name="module_no_handler">No app on this device can open the module zip.</string>
+    <string name="module_stage_failed">Could not unpack the module zip from the app.</string>
+
+    <string name="mounted_state">Mounted (%1$s) at %2$s</string>
+    <string name="mounted_state_fuse">Mounted at %1$s via the mammon FUSE daemon. Writing needs an NFSv4.1 server and never supports renaming; files are shown as owned by root.</string>
+    <string name="mounted_state_shared">Mounted (%1$s) at %2$s — open that path in any file manager.</string>
+    <string name="mounted_state_shared_fuse">Mounted at %1$s via the mammon FUSE daemon — open that path in any file manager. Writing needs an NFSv4.1 server and never supports renaming; files are shown as owned by root.</string>
+    <string name="not_mounted_state">Not mounted.</string>
+    <string name="unknown_state">Mount state unknown (cannot read the global mount table).</string>
+    <string name="not_mounted_after_mount">Mount command succeeded, but the share is not visible in the global mount table.</string>
+    <string name="err_mount_no_root">No root access — su could not be started, or it never answered.</string>
+    <string name="err_mount_kernel_no_fuse">This kernel has neither an NFS client nor FUSE (no nfs, nfs4 or fuse in /proc/filesystems) — nothing left to try.</string>
+    <string name="err_mount_module_files">NFS/FUSE support ships as a module on this device but could not be loaded: %1$s</string>
+    <string name="err_mount_fuse_daemon">The FUSE mount was made, but the mammon daemon did not start: %1$s</string>
+    <string name="err_mount_failed">Mount failed: %1$s</string>
+    <string name="err_mount_no_emulated_route">This device gives Mammon no way into shared storage that other apps can see too, so a mount there would be invisible to them. Use /mnt/nas for the root mount, or the NFS share (SAF) card to browse the share without root.</string>
+    <string name="err_mount_not_propagated">The share was mounted, but it never appeared in shared storage where other apps could see it, so Mammon removed it again: %1$s</string>
+    <string name="err_mount_not_propagated_stuck">The share was mounted, it never appeared in shared storage where other apps could see it, and Mammon could not remove it again — press Unmount to clear it: %1$s</string>
+    <string name="err_no_config">No NFS server configured yet. Save host and export first.</string>
+    <string name="err_timeout">The server did not answer in time.</string>
+    <string name="err_bad_config">Need a host and an export path like /export/data.</string>
+    <string name="err_bad_mountpoint_absolute">Enter an absolute mountpoint path starting with / (a bare "/" is not valid).</string>
+    <string name="err_bad_mountpoint_storage">That path is Android\'s own storage plumbing: a physical SD card or USB volume under /storage has no shared-storage view to propagate a mount into, and /data/media sits below the daemon that serves shared storage, so a mount there reaches no app. Use shared storage itself, for example /storage/emulated/0/nfs, or a path of your own like /mnt/nas.</string>
+    <string name="err_bad_mountpoint_dot_component">Type the folder that path really means: a mountpoint cannot contain a . or .. step. Use /storage/emulated/0/nfs, not /storage/emulated/0/../nfs.</string>
+    <string name="err_bad_mountpoint_tree_root">Mount a folder inside shared storage, not the whole of it — try /storage/emulated/0/nfs.</string>
+    <string name="err_bad_mountpoint_android_dir">Android owns the Android folder in shared storage — pick a different folder, for example /storage/emulated/0/nfs.</string>
+    <string name="err_field_host">Enter the server host or IP.</string>
+    <string name="err_field_export">Enter an export path starting with /.</string>
+    <string name="err_field_port">Port must be 1–65535.</string>
+    <string name="err_field_uid">User ID must be a whole number from 0 to 4294967295.</string>
+    <string name="err_field_gid">Group ID must be a whole number from 0 to 4294967295.</string>
+    <string name="err_field_aux_gids">Extra groups must be up to 16 comma-separated numbers from 0 to 4294967295.</string>
+    <string name="err_unreachable">Connection refused — is the NFS server up?</string>
+    <string name="err_file_too_large">File exceeds the 64 MiB read limit of this provider.</string>
+    <string name="err_no_proxy_fd">This device cannot open share files for writing: its kernel does not provide the file bridge Android needs for it. Reading and creating files still work; for writes, try Filesystem mount (requires root).</string>
+    <string name="err_generic">NFS error: %1$s</string>
+    <string name="err_bad_display_name">Cannot use “%1$s” as a name on this share.</string>
+    <string name="err_nfs_denied">The server refused: the configured user ID may not write here.</string>
+    <string name="err_nfs_missing">That item is no longer on the server.</string>
+    <string name="err_nfs_exists">Something with that name already exists on the server.</string>
+    <string name="err_nfs_not_empty">The folder is not empty — delete what is inside it first.</string>
+    <string name="err_nfs_no_space">The server has no space left.</string>
+    <string name="err_nfs_read_only">This share is connected over NFSv3, which Mammon cannot write to.</string>
+</resources>

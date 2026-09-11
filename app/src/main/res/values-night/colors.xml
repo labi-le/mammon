@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Mammon palette, dark: iOS-style ramp on a near-black canvas; the accent
+     lifts to the lighter purple-gold for contrast against #1C1C1E cards.
+     Light values live in values/colors.xml. -->
+<resources>
+    <color name="accent">#FF9B7FD4</color>
+    <color name="ios_red">#FFFF453A</color>
+    <color name="label_secondary">#99EBEBF5</color>
+    <color name="separator">#99545458</color>
+    <color name="selection_highlight">#4D9B7FD4</color>
+    <color name="accent_container">#FF33265A</color>
+    <color name="on_accent_container">#FFC9BCF0</color>
+
+    <color name="bg_canvas">#FF000000</color>
+    <color name="bg_card">#FF1C1C1E</color>
+    <color name="bg_dialog">#FF242426</color>
+    <color name="bg_field">#FF3A3A3C</color>
+    <color name="label">#FFFFFFFF</color>
+</resources>

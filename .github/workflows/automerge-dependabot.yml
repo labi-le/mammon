@@ -1,0 +1,35 @@
+---
+name: "Dependabot Automerge - Action"
+
+on:
+  workflow_run:
+    workflows: ["Build"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: DependabotMerge
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    steps:
+      - name: Merge the Dependabot PR
+        run: |
+          number=$(gh pr list --repo "$REPO" --head "$HEAD" \
+            --state open --json number --jq '.[0].number')
+          if [ -z "$number" ]; then
+            echo "no open PR for $HEAD, nothing to merge"
+            exit 0
+          fi
+          gh pr merge --merge --delete-branch --repo "$REPO" "$number"
+        env:
+          REPO: ${{ github.repository }}
+          HEAD: ${{ github.event.workflow_run.head_branch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

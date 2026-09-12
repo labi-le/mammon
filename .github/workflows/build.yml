@@ -1,7 +1,10 @@
 name: Build
 
+# A tag push is already built by `release`, which runs the same tests and lint,
+# so this one stays on branch pushes and pull requests.
 on:
   push:
+    branches: ["main"]
   pull_request:
 
 jobs:

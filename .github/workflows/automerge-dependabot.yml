@@ -28,7 +28,20 @@ jobs:
             echo "no open PR for $HEAD, nothing to merge"
             exit 0
           fi
-          gh pr merge --merge --delete-branch --repo "$REPO" "$number"
+          if gh pr merge --merge --delete-branch --repo "$REPO" "$number"; then
+            exit 0
+          fi
+          # A branch whose base moved on is merged three-way, and GITHUB_TOKEN may
+          # not write a workflow file that way. Dependabot may: its rebase lands a
+          # fresh head, whose Build run brings us back here against a current base.
+          # Asked once only - a second refusal is a different cause and stays red.
+          if gh pr view --repo "$REPO" "$number" --json comments \
+            --jq '.comments[].body' | grep -qx '@dependabot rebase'; then
+            echo "::error::#${number} still refuses to merge after a rebase"
+            exit 1
+          fi
+          echo "::notice::merge refused for #${number}; asking dependabot to rebase"
+          gh pr comment --repo "$REPO" "$number" --body "@dependabot rebase"
         env:
           REPO: ${{ github.repository }}
           HEAD: ${{ github.event.workflow_run.head_branch }}

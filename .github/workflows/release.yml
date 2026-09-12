@@ -48,10 +48,10 @@ jobs:
       - name: Test and lint
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
 
-      - name: Assemble release APK
-        run: ./gradlew --no-daemon :app:assembleRelease
+      - name: Assemble the release APK and the loader module zip
+        run: ./gradlew --no-daemon :app:assembleRelease :app:packModuleZip
 
-      - name: Sign and collect the APK
+      - name: Sign and collect the release assets
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -74,18 +74,22 @@ jobs:
             echo "::warning::no KEYSTORE_BASE64 secret; shipping an UNSIGNED APK"
             cp "$in" "dist/mammon-${GITHUB_REF_NAME#v}-unsigned.apk"
           fi
+          # magisk-module/README.md tells users to fetch this asset by name, so the
+          # module's own version names it rather than the app tag.
+          mv="$(sed -nE 's/^version=(.*)$/\1/p' magisk-module/module.prop)"
+          cp app/build/tmp/packModuleZip/mammon-module.zip "dist/mammon-fsloader-${mv}.zip"
           ls -l dist
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-apk
-          path: dist/*.apk
+          name: release-assets
+          path: dist/*
           if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
-          files: dist/*.apk
+          files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true

@@ -31,7 +31,7 @@ class SafContractTest {
         assertEquals(0, flags and Document.FLAG_DIR_SUPPORTS_CREATE)
     }
 
-    /** The v3 backend refuses every mutation without asking a server, so it promises none. */
+    /** No backend refuses writes wholesale any more; the flags still have to obey the gate. */
     @Test fun `a backend that implements no writes advertises nothing`() {
         assertEquals(0, SafFlags.forNode(isDirectory = true, writable = false))
         assertEquals(0, SafFlags.forNode(isDirectory = false, writable = false))
@@ -92,12 +92,12 @@ class SafContractTest {
     }
 
     /**
-     * UnsupportedOperationException is what every DocumentsProvider default body throws
-     * for "this provider does not do that"; a server refusal is a different statement and
-     * FileNotFoundException is what the write methods declare for it.
+     * DocumentsUI drops an UnsupportedOperationException from New folder and from SAVE
+     * without showing the user anything, so a refusal it renders is the only useful one,
+     * and FileNotFoundException is what `createDocument` declares.
      */
-    @Test fun `only an unimplemented backend reads as unsupported`() {
-        assertTrue(NfsFailure.Unsupported("create").asSafException("m") is UnsupportedOperationException)
+    @Test fun `every refusal reaches the client as the exception the write methods declare`() {
+        assertTrue(NfsFailure.Unsupported("create").asSafException("m") is FileNotFoundException)
         assertTrue(NfsFailure.PermissionDenied("x").asSafException("m") is FileNotFoundException)
         assertTrue(NfsFailure.NotFound("x").asSafException("m") is FileNotFoundException)
         assertTrue(NfsFailure.AlreadyExists("x").asSafException("m") is FileNotFoundException)
@@ -117,7 +117,7 @@ class SafContractTest {
         assertEquals(SafErrno.EXISTS, NfsFailure.AlreadyExists("x").safErrno())
         assertEquals(SafErrno.NOTEMPTY, NfsFailure.DirectoryNotEmpty("x").safErrno())
         assertEquals(SafErrno.NOSPC, NfsFailure.OutOfSpace("x").safErrno())
-        assertEquals(SafErrno.ROFS, NfsFailure.Unsupported("write").safErrno())
+        assertEquals(SafErrno.NOSYS, NfsFailure.Unsupported("write").safErrno())
         assertEquals(SafErrno.IO, NfsFailure.Server("x").safErrno())
     }
 

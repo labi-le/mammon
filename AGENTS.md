@@ -36,12 +36,12 @@ mammon is an Android app for reading and writing NFS storage on a device, inspir
 directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
 
 - **Primary — rootless SAF access** (direction C): `NfsDocumentsProvider` exposes the
-  configured export to any file manager, readable and, where the backend implements it
-  (which means an NFSv4.1 server), writable — create, delete and
-  write-mode `openDocument` through `StorageManager.openProxyFileDescriptor`, so a
-  server refusal reaches the writer's own `write(2)` instead of a log line after its fd
-  is gone. The v4.1 session also survives an idle period: the connection is rebuilt
-  transparently on the next call, and that recovery never re-sends a create, MKDIR or
+  configured export to any file manager, readable and writable on either backend —
+  create, delete and write-mode `openDocument` through
+  `StorageManager.openProxyFileDescriptor`, so a server refusal reaches the writer's
+  own `write(2)` instead of a log line after its fd is gone. The v4.1 session also
+  survives an idle period: the connection is rebuilt transparently on the next call,
+  and that recovery never re-sends a create, MKDIR or
   REMOVE, so a mutation is reported failed rather than silently performed twice — the one
   case measured end to end. A server restart rebuilds the connection the same way, but
   only metadata comes back with it: the restarted server answers READ and WRITE with
@@ -52,14 +52,35 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   seam has no RENAME. Two protocol versions sit behind the
   `NfsSession` interface and are chosen per export with no UI switch — NFSv4.1 over
   `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
-  as the fallback for servers that still run rpcbind and mountd. Against an NFSv3-only
-  export every child row advertises no writes — but the two rows built without a session,
-  the SAF root and the export root itself, still carry create, because answering them
-  costs no round trip precisely by not asking a backend. A save into the export root
-  therefore survives the picker and fails with Unsupported. AUTH_SYS sends a
-  configured identity (uid, gid, supplementary gids), because root_squash — the export
-  default — maps uid 0 to nobody and refuses every write. There is no "allow writes"
-  toggle and never will be: writability is a property of the server, not of a setting.
+  as the fallback for servers that still run rpcbind and mountd. Both backends implement
+  the mutating half; what parts them is mechanism. Neither re-sends a mutation a dead
+  connection swallowed — v4.1 narrows its recovery to statuses that prove the operation
+  never ran, and v3, stateless with no session slot and no server-side replay cache to
+  catch a duplicate, sends CREATE, MKDIR, REMOVE and RMDIR through the library's one-shot
+  calls so a lost one is reported failed rather than risked twice. What v4.1 has and v3
+  does not is recovery for the calls it may repeat: a session re-established in place, a
+  transport rebuilt mid-operation, where v3 has only the library's retry count. v3 also
+  walks the path with one LOOKUP per component ahead of the operation, where v4.1 fuses
+  the walk, the operation and its attribute read-back into a single COMPOUND — but it
+  walks a directory once and not once per call, since the session both writes and READS a
+  cache of the 256 most recently used filehandles, so what a cached path still pays is
+  the one LOOKUP a caller wanting attributes off the wire spends on the leaf; an entry
+  answers absent past 5 s, which bounds how long a rename elsewhere can leave a handle
+  denoting the wrong object, and a path is dropped together with everything under it when
+  the server rejects a handle or a removal there succeeds; its listing falls back from
+  READDIRPLUS — optional in RFC 1813, and refused outright by real servers such as
+  unfs3 — to READDIR plus a LOOKUP per child, latched for the session so the refusal
+  costs one call and not one per directory. Every v3 READ and listing page is capped at
+  61440 bytes so that no reply is split across RPC record fragments, which the client
+  library reassembles wrongly — a correctness bound and not a tuning number; the guide
+  says why. The two rows built without a session, the SAF root and the export root
+  itself, carry create because answering them costs no round trip precisely by not
+  asking a backend; now that both backends write, what they advertise is what a save
+  into the export root does.
+  AUTH_SYS sends a configured identity (uid, gid, supplementary gids), because
+  root_squash — the export default — maps uid 0 to nobody and refuses every write.
+  There is no "allow writes" toggle and never will be: writability is a property of
+  the server, not of a setting.
 - **Root option — one Mount button, three rungs** (directions A and B): `RootMount` tries
   kernel `mount -t nfs -o vers=4.2` through `su --mount-master`, then `vers=3`, then a
   pure-Kotlin FUSE daemon serving the same `NfsSession` the provider uses. A root shell
@@ -70,18 +91,19 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   exhausts the ladder is separated into no usable `su`, a kernel that cannot give us
   FUSE, module files present but nothing registered, a FUSE mount whose daemon never
   served, and everything else. The FUSE view carries writes — create, write, truncate,
-  set-mtime, mkdir, unlink and rmdir — when the backend implements them, which means an
-  NFSv4.1 server; against an NFSv3-only export every mutation answers EROFS. Files carry
-  uid/gid 0 and synthesised `0755`/`0644` modes, and rename is never served. The daemon
-  is proven against a real export on a Linux host, and the end-to-end root chain on a
-  phone is verified since v0.6.6 on one real device (Android 16, KernelSU-Next) — see
+  set-mtime, mkdir, unlink and rmdir — on either backend, since both implement the
+  mutating half; what an export mounted `ro` or a squashed identity refuses stays
+  refused. Files carry uid/gid 0 and synthesised `0755`/`0644` modes, and rename is
+  never served. The daemon is proven against a real export on a Linux host, and the
+  end-to-end root chain on a phone is verified since v0.6.6 on one real device
+  (Android 16, KernelSU-Next) — see
   the guide's Verification status before treating it as generally working.
 
 Out of scope so far: RENAME at any layer,
 Kerberos/RPCSEC_GSS, pNFS layouts, NFSv4 delegations and byte-range locks, foreground
-services, boot receivers, caching layers. The `NfsSession` seam is writable, the NFSv4.1
-backend implements it (create, write, setattr, remove, mkdir) and both front ends now
-consume it. Boot-time automount of the saved
+services, boot receivers, caching layers. The `NfsSession` seam is writable, both the
+NFSv4.1 and the NFSv3 backend implement it (create, write, setattr, remove, mkdir) and
+both front ends now consume it. Boot-time automount of the saved
 share is owned by the companion module (v1.2, off by default behind a flag file), not
 the app.
 

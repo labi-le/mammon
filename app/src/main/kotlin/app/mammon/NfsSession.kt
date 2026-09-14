@@ -52,16 +52,19 @@ sealed class NfsFailure(message: String) : IOException(message) {
     class OutOfSpace(what: String) : NfsFailure("no space left: $what")
 
     /**
-     * Refusal, not failure: this backend has no implementation, so no server was asked.
-     * A frontend can rule this out up front with [NfsSession.implementsWrites], but must
-     * still handle [PermissionDenied] per call, which is the only real capability answer.
+     * Not available here: either this backend has no implementation, or the server
+     * refused the procedure — RFC 1813 §3.3.13 lists NFS3ERR_NOTSUPP for RMDIR, so a
+     * real mutation can come back refused. [NfsSession.implementsWrites] rules out the
+     * first half up front and nothing about the second, which arrives per call as
+     * [PermissionDenied] does.
      */
-    class Unsupported(operation: String) : NfsFailure("$operation is not supported by this NFS backend")
+    class Unsupported(operation: String) : NfsFailure("$operation is not available on this share")
 
     /**
-     * The call outran its deadline; whether the server applied it is unknown. [Server]
-     * is an answer the server gave, so there the operation demonstrably did not happen —
-     * which is why this cannot fold into it.
+     * No usable answer came back: the call outran its deadline, or the server answered by
+     * asking for it to be made again (NFS3ERR_JUKEBOX). Either way whether it applied is
+     * unknown. [Server] is an answer the server gave, so there the operation demonstrably
+     * did not happen — which is why this cannot fold into it.
      */
     class Timeout(what: String) : NfsFailure("timed out: $what")
 
@@ -109,8 +112,7 @@ interface NfsFile : Closeable {
      * Writes up to [len] bytes from [src] at [offset]; returns the count the server took,
      * which may be short, so callers loop as they would over `write(2)`.
      */
-    fun writeAt(offset: Long, src: ByteArray, off: Int, len: Int): Int =
-        throw NfsFailure.Unsupported("write")
+    fun writeAt(offset: Long, src: ByteArray, off: Int, len: Int): Int
 }
 
 /**
@@ -119,8 +121,7 @@ interface NfsFile : Closeable {
  * thread.
  *
  * Every member is abstract, mutating ones included: a backend that declares
- * [implementsWrites] cannot then forget one of them and fail at runtime instead. A
- * read-only backend implements [ReadOnlyNfsSession], which is where the refusals live.
+ * [implementsWrites] cannot then forget one of them and fail at runtime instead.
  */
 interface NfsSession : Closeable {
 
@@ -164,8 +165,18 @@ interface NfsSession : Closeable {
      * has one REMOVE and does not discriminate by type. A frontend owing POSIX
      * semantics — `unlink(2)` must fail EISDIR on a directory, `rmdir(2)` ENOTDIR on a
      * file — has to check the type itself; the server will not.
+     *
+     * [isDirectory] spares a backend that must pick a procedure the lookup its caller
+     * already paid for. Null means "find out". A wrong hint is not free: it costs the
+     * refused round trip before that lookup, and on a server that honours REMOVE on a
+     * directory (RFC 1813 §3.3.12 permits it) the wrong procedure goes first and can
+     * succeed. So supply it only where the type is trusted rather than guessed: a FUSE
+     * opcode carries the kernel's cached dentry type, which the [TTL_SECONDS] window the
+     * frontend advertises lets go stale, and the FUSE frontend passes it regardless, as
+     * Linux's own v3 client picks the procedure off the syscall. A SAF documentId carries
+     * no type at all.
      */
-    fun remove(parentDocId: String, name: String)
+    fun remove(parentDocId: String, name: String, isDirectory: Boolean? = null)
 
     /**
      * Sets whichever of [size] and [modifiedMillis] is non-null and returns the
@@ -173,29 +184,6 @@ interface NfsSession : Closeable {
      * plain read of them.
      */
     fun setAttributes(docId: String, size: Long? = null, modifiedMillis: Long? = null): NodeAttrs
-}
-
-/**
- * A backend that serves reads only. Implementing this is the whole declaration: the
- * refusals below are the reason [NfsSession] can keep every member abstract, so
- * "declared writable but left a member unimplemented" is a compile error rather than a
- * runtime surprise on the first create.
- */
-interface ReadOnlyNfsSession : NfsSession {
-
-    override val implementsWrites: Boolean get() = false
-
-    override fun createFile(parentDocId: String, name: String): CreatedFile =
-        throw NfsFailure.Unsupported("create")
-
-    override fun makeDirectory(parentDocId: String, name: String): NodeAttrs =
-        throw NfsFailure.Unsupported("mkdir")
-
-    override fun remove(parentDocId: String, name: String): Unit =
-        throw NfsFailure.Unsupported("remove")
-
-    override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?): NodeAttrs =
-        throw NfsFailure.Unsupported("setattr")
 }
 
 /** The sequential view of an [NfsFile] that SAF's openDocument needs. */

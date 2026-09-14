@@ -220,7 +220,8 @@ class NfsDocumentsProvider : DocumentsProvider() {
     /**
      * Non-recursive: NFS REMOVE refuses a non-empty directory and that refusal is the
      * user's answer. Nothing is removed as a side effect, so no descendant URI grant is
-     * owed a revoke — the framework revokes the named document itself.
+     * owed a revoke — the framework revokes the named document itself. SAF passes the id
+     * alone, so the backend gets no type hint and a v3 session pays a lookup for it.
      */
     override fun deleteDocument(documentId: String) {
         if (documentId == PathCodec.ROOT_ID) {
@@ -457,7 +458,7 @@ class NfsDocumentsProvider : DocumentsProvider() {
         SafErrno.EXISTS -> OsConstants.EEXIST
         SafErrno.NOTEMPTY -> OsConstants.ENOTEMPTY
         SafErrno.NOSPC -> OsConstants.ENOSPC
-        SafErrno.ROFS -> OsConstants.EROFS
+        SafErrno.NOSYS -> OsConstants.ENOSYS
         SafErrno.IO -> OsConstants.EIO
     }
 
@@ -488,7 +489,7 @@ class NfsDocumentsProvider : DocumentsProvider() {
         is NfsFailure.AlreadyExists -> context!!.getString(R.string.err_nfs_exists)
         is NfsFailure.DirectoryNotEmpty -> context!!.getString(R.string.err_nfs_not_empty)
         is NfsFailure.OutOfSpace -> context!!.getString(R.string.err_nfs_no_space)
-        is NfsFailure.Unsupported -> context!!.getString(R.string.err_nfs_read_only)
+        is NfsFailure.Unsupported -> context!!.getString(R.string.err_nfs_unsupported)
         is NfsFailure.Timeout -> context!!.getString(R.string.err_timeout)
         is NfsFailure.Unreachable -> context!!.getString(R.string.err_unreachable)
         is NfsFailure.Server ->

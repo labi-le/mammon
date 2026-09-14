@@ -10,8 +10,8 @@
 All three directions below are now shipped. Direction C — the rootless
 DocumentsProvider — was PICKED on 2026-08-24 and remains the primary way mammon exposes
 NFS storage: the configured export shows up in any SAF file manager through
-`NfsDocumentsProvider` (authority `app.mammon.nfs`), readable, and writable on an
-NFSv4.1 export whose server permits the write.
+`NfsDocumentsProvider` (authority `app.mammon.nfs`), readable, and writable over either
+protocol version where the server permits the write.
 Since v0.4.0 that provider speaks two protocol versions behind one `NfsSession`
 interface, chosen per export with no UI switch: NFSv4.1 (`NfsV4Access`, over
 `org.dcache:nfs4j-core` XDR and `org.dcache:oncrpc4j-core` RPC) is tried first because
@@ -19,23 +19,108 @@ it needs only TCP 2049, and NFSv3 (`NfsAccess`, over `com.emc.ecs:nfs-client`) i
 fallback for servers that still publish rpcbind and mountd. An NFSv4-only server —
 the common modern default — was invisible to mammon before that.
 
-`NfsSession` gained a mutating half — create, write, setattr, remove, mkdir — that the
-NFSv4.1 backend implements and the NFSv3 backend declines outright. Both front ends now
-consume it. Building the seam first is what let them land as separate changes rather
-than growing two NFS write paths. RENAME is
-deliberately absent from the seam, so neither front end offers it.
+`NfsSession` gained a mutating half — create, write, setattr, remove, mkdir — that both
+backends implement and both front ends consume. What parts them is mechanism: v4.1 fuses
+an operation and its attribute read-back into one COMPOUND and can re-establish a
+session or rebuild a whole transport under a call it may repeat, while v3 walks the path
+with one LOOKUP per component before it can send the operation at all, and, being
+stateless — no session slot, no server-side replay cache — puts CREATE, MKDIR, REMOVE
+and RMDIR on the wire exactly once, reporting a lost one as failed rather than risking a
+second execution. Its listing carries the same asymmetry: READDIRPLUS is optional in RFC
+1813 and real servers refuse it, so `NfsAccess` falls back to READDIR plus a LOOKUP per
+child, latched for the session so the refusal costs one call and not one per directory.
+What the session does bound is the path walk under all of it, with a filehandle cache:
+the 256 most recently used handles, access-ordered, read as well as written, so a path's
+prefix is resolved per directory and not per call — a mutation whose whole path is
+cached sends no LOOKUP of its own, while a caller that came for attributes off the wire,
+a `stat` or an open or a plain read-back, still looks the LEAF up every time, so a hot
+cache costs it one LOOKUP and not one per component. A READDIRPLUS listing writes it
+too — any `post_op_fh3` the reply carries for a child it keeps, files included — so
+descending into a directory just listed costs no LOOKUP of its own, and the harvest
+stops at the first children that fit the same 256, so a wide listing cannot evict its
+own head or the prefix chain the walk just paid for. Entries carry a monotonic stamp and
+answer absent past 5 s, which is a correctness bound and not tuning: a filehandle
+survives a foreign rename — it stays valid and merely stops denoting the path it is
+keyed under — so no server error can expose the binding, and an unbounded entry would
+let a rename elsewhere aim a later mutation at the object that moved away. 5 s is the
+entry lifetime the FUSE layer above already advertises and the order a kernel NFS client
+bounds the same hazard with (`acdirmin`), so the residual is that window and nothing
+wider: inside it a mutation can still land on an object renamed away under its path.
+Meanwhile the listing fallback's per-child LOOKUP is neither cached nor bounded: on a
+server that refuses READDIRPLUS every listing pays one of them for every entry the name
+filter accepts, symlinks and special files included, since an entry's type is known only
+once its lookup has answered, and the latch spares only the refused call itself. A handle
+the server disowns, NFS3ERR_STALE or NFS3ERR_BADHANDLE, drops that path and everything
+under it, and so does a successful removal, since a name that is gone vouches for
+nothing below it. Building the seam first is what let them land as separate changes
+rather than growing two NFS write paths. RENAME is deliberately
+absent from the seam, so neither front end offers it.
+
+The seam's single removal is where that split costs something real. NFSv3 has REMOVE and
+RMDIR, so the entry's type picks the call, and `remove`'s optional `isDirectory` is that
+type when the caller already holds it: under FUSE the opcode is authoritative — the VFS
+resolves the type before the daemon is asked, `do_unlinkat` answering EISDIR itself and
+`vfs_rmdir` requiring a directory, off the dentry this daemon filled and the kernel
+holds for the 5 s entry TTL — so the hint goes down and v3 sends one call, while SAF
+hands a documentId alone and v3 pays a LOOKUP to decide. The hint is TRUSTED, not
+corrected: the call it picks goes out first, and only a REFUSAL is re-decided, by
+re-reading the type and never by reading "wrong procedure" out of the status, because no
+status means that — RFC 1813 §3.3.12 lists no NFS3ERR_ISDIR among REMOVE's errors and
+its IMPLEMENTATION section permits REMOVE on a directory, so unfs3 answering RMDIR on a
+file with NFS3ERR_STALE and deleting a directory through REMOVE are both conformant.
+That second half is the residual: a type flip inside the dentry window aims REMOVE at a
+directory, a permissive server carries it out and answers NFS3_OK, and no corrective
+read follows a success, so nothing here detects the mismatch. It is the trade Linux's
+own v3 client makes, picking the procedure off the syscall the same way; buying the
+window back would cost a LOOKUP before every unlink, to narrow a hazard the layer
+handing the type down already lives inside. A policy refusal — ACCES, PERM, ROFS,
+NOTEMPTY — is the one refusal that is not corrected either: it ends the removal where it
+stands, because the server has already said it would refuse this identity, this `ro`
+export or this non-empty directory, so a second call could only reach an object that
+took the name after the user's own deletion was refused, and never sending a destructive
+call the server has already declined is the side to be wrong on.
+
+One v3 number is a correctness bound and not a tuning knob: `UNFRAGMENTED_REPLY_MAX`,
+61440, which caps what a v3 READ asks for and what a READDIR or READDIRPLUS page is
+allowed to cost. It exists because `com.emc.ecs:nfs-client` cannot read a reply the
+server split over several RPC record fragments — `RecordMarkingUtil.removeRecordMarking`
+reads each fragment's four-byte header and then advances its cursor by the fragment size
+alone, so every fragment after the first is taken four bytes early and the reassembled
+record is garbage; the library reports it as a connection error, retries the same xid
+once, and the transfer dies. A single-fragment record is parsed correctly, which is why
+nothing saw this until a reply grew past one. The threshold is a property of the
+server's RPC layer: libtirpc and its ntirpc fork close a fragment every 65532 bytes of
+record payload, which covers unfs3 and nfs-ganesha, and was measured on unfs3 — a READ
+asking for 524288 bytes against a 300 KB file came back as a 307328-byte reply split
+`[65532, 65532, 65532, 65532, 45200]`, which a client that walks record marks correctly
+reassembles byte-exact. The Linux kernel server writes one record marker per reply,
+which is read off its implementation and not measured here. A READ reply carries 128
+bytes of RPC and NFS header plus up to three of padding, so 61440 is the largest page
+multiple that still fits under the threshold. Raising it does not merely cost
+performance, it corrupts reads, and clamping the SERVER's `rtmax` instead only hides the
+client defect on the one server that was clamped. Keeping the request small is the side
+to err on: a smaller reply is another round trip, a misassembled one is wrong bytes. The
+write direction needs no such bound — the library's own record marking is correct, and
+it splits only above its 1 MiB MTU — and v4.1 is untouched, so `NFS_READ_CHUNK` stays
+512 KiB there.
 
 On the SAF side the consequence worth knowing is that a row's `FLAG_*` is advisory by
 specification: deriving it honestly would need an NFSv4 ACCESS per listed child, which
 is one extra operation in an existing COMPOUND on v4 but a separate RPC per child on v3
-— exactly the storm `NfsAccess` documents having removed — and the RFC calls the answer
-advisory anyway. So flags are optimistic, gated only on which backend implements writes
-at all, and the exception each mutation throws is the contract: `SafContract.kt` maps
-every `NfsFailure` case onto either `UnsupportedOperationException` (the framework's own
-signal for an operation a provider does not have) or `FileNotFoundException` with a
-message a user can act on. Returning normally from a refused mutation is the one
-outcome that must never happen, because the system UI updates its model optimistically
-on a clean return. A server refusal is not the only way a write-mode open fails, so
+— the storm `NfsAccess`'s READDIRPLUS loop avoids, and pays anyway on a server that
+refuses READDIRPLUS — and the RFC calls the answer advisory anyway. So flags are
+optimistic, gated on `implementsWrites` and nothing else, which both backends now set,
+and the exception each mutation throws is the contract: `SafContract.kt` maps
+every `NfsFailure` case onto `FileNotFoundException` with a message a user can act on —
+the exception the write methods declare, and the only refusal the system UI renders,
+since DocumentsUI drops an `UnsupportedOperationException` from New folder and from SAVE
+without telling the user anything. `Unsupported` sits in that set and no longer means
+the app cannot do it: it means the operation is not available here, and the common case
+is now a server refusing a procedure the specification lets it refuse, which the FUSE
+side answers with ENOSYS rather than EROFS. Returning normally from a refused mutation
+is the one outcome that must never happen, because the system UI updates its model
+optimistically on a clean return. A server refusal is not the only way a write-mode open
+fails, so
 `proxyOpenOutcome` covers the other one: where the framework cannot give this app the
 proxy descriptor at all, its `IllegalStateException` becomes the declared
 `FileNotFoundException` with a message about the DEVICE, keeping the original as the
@@ -63,8 +148,8 @@ v0.5.0 `RootMount` walks one three-rung ladder and stops at the first rung that 
 
 The status line names which backing landed, because the three are not interchangeable:
 the kernel rungs give a full POSIX mount carrying the server's own ownership and
-permission bits, while the FUSE rung gives a view with synthesised metadata that accepts
-writes only when the backend does (see below). Rungs 1 and 2 work only on devices whose
+permission bits, while the FUSE rung gives a view with synthesised metadata whose writes
+the server alone accepts or refuses (see below). Rungs 1 and 2 work only on devices whose
 kernel has NFS support and whose su setup lets the mount land in the global namespace;
 rung 3 needs no NFS support in the kernel at all, only `/dev/fuse` and root — that is
 the whole reason it exists. One NFS implementation now backs both surfaces: the daemon
@@ -315,10 +400,14 @@ That is why B was finally built this way — it is history, not a live option.
 
 Every one of these is a deliberate narrowing, not a gap waiting on a fix:
 
-- **A read-only backend answers EROFS, not ENOSYS.** The NFSv3 fallback implements no
-  mutation, and its refusals arrive at the daemon as one typed failure. That maps to
-  EROFS, matching what `open` for write and `access` already answer on such a mount, so
-  the errno describes the filesystem rather than claiming `mkdir` does not exist.
+- **A refused write is the server's answer, not the mount's.** Both backends implement
+  the mutating half, so the daemon never declines a mutation out of its own knowledge of
+  the backend; it forwards the status the server returned as the errno naming that case —
+  EACCES for `NFS3ERR_ROFS` on an export mounted `ro` or an identity the server squashes,
+  ENOTEMPTY for a non-empty rmdir, ENOSPC for a full server. What the mount cannot do is
+  a property of the export, never of the protocol version behind it, and the
+  `implementsWrites` gate on `open` for write and on `access` stays in place for a
+  backend that declares no writes, of which the app now has none.
 - **No rename.** RENAME and RENAME2 answer ENOSYS, because the backend seam has no
   rename and emulating one as copy-plus-delete would be neither atomic nor O(1).
   MKNOD, LINK, SYMLINK, FALLOCATE and the xattr setters answer ENOSYS for the same
@@ -378,7 +467,7 @@ specified. The nodeid invalidation was proven there too: after an unlink and a r
 of the same name, `stat` reported a different inode and the new content, which is exactly
 the aliasing the node table's tombstone exists to prevent.
 
-The SAF write path now has runtime evidence, though not for the bytes. Running the
+The SAF write path's first runtime evidence stopped short of the bytes. Running the
 released 0.7.0 APK in Waydroid (Android 13) against the same live NFSv4.1 export, the
 provider itself executed for the first time: DocumentsUI browsed the export root and
 listed children with the sizes and `FLAG_*` a foreign client actually sees,
@@ -389,18 +478,62 @@ create as a squashed uid 0 was refused with the mapped `FileNotFoundException` a
 nothing appeared on the server, while the identical call as the configured account
 succeeded — the flag and exception contract behaving as specified against a real client.
 
-What did NOT execute is everything past `openProxyFileDescriptor`. That call needs a
+The NFSv3 write path has evidence of its own, and it is the first byte-exact write proof
+from an Android client and through the SAF front end: a write-capable debug APK of this
+work on an Android emulator, driven through DocumentsUI against a real unfs3 export on
+the host — patched for the rig to serve READDIRPLUS, which unfs3 as shipped refuses, so
+the READDIR fallback is not what these runs exercise — with an RPC relay recording every
+call server-side. A 300 KB copy into the export came back md5-identical to the source as
+one CREATE, one SETATTR and nine FILE_SYNC WRITEs. New folder onto a name already taken
+drew NFS3ERR_EXIST and the retry name ` (2)` landed instead; `rmdir` of a non-empty
+directory answered NFS3ERR_NOTEMPTY; a mkdir into an export mounted `ro` answered
+NFS3ERR_ROFS and reached the screen as "The server refused: the configured user ID may
+not write here." No CREATE, MKDIR, REMOVE or RMDIR appeared on the wire twice in any
+run, and the recorder proves it can see a duplicate: its negative control is a CREATE
+re-sent as an identical frame under the same xid, which it flags. What those runs do NOT
+reach is the case the naked calls exist for — a mutation whose reply the connection
+swallowed — because none of them lost one, so no-resend-on-loss stays argued from the
+library's retry behaviour rather than measured. The same scenario against the previous
+APK put no CREATE, MKDIR, REMOVE or RMDIR on the wire at all, every mutating step of it
+refused, which is what makes the pair a comparison. An emulator against unfs3 is neither
+a phone nor a NAS.
+
+That run predates the fragment bound, and its rig's unfs3 had been rebuilt to advertise
+`rtmax` 61440, so no READ reply could grow past one fragment. The rebuild covered only
+that side: `rtmax` says nothing about a READDIRPLUS page, and the build still asked for
+64 KiB of one, past the 65532-byte threshold — so on the listing side the defect went
+unprovoked rather than excluded, the rig's directories being small. The bound got its
+own A/B afterwards on the same rig, with unfs3's transfer sizes back at their stock
+524288 for rtmax, rtpref, wtmax and wtpref alike. There the previous read-only APK,
+which predates the bound, asks for a 524288-byte READ, receives one status-0 reply split
+into five record fragments, replays the same xid on a fresh connection and dies with
+"RPC error: tcp IO error on the connection", having read nothing back — the read is the
+one step of the scenario it fails. The build carrying the bound reads the same 300 KB
+byte-exact in six READs of 61440 at consecutive offsets and writes it back byte-exact in
+one CREATE, one SETATTR and five FILE_SYNC WRITEs — the write side needs no bound of its
+own — passing all eleven steps, with not one RPC error line over a cleared logcat for
+the read leg. A host-side client that walks record marks correctly reassembles the
+identical five-fragment reply byte-exact, which puts the fault in the library's
+arithmetic rather than in the server. Two limits belong with that result. The rig
+measures libtirpc's 65532-byte flush and nothing else — the host's kernel nfsd is
+unreachable from the emulator, so it says nothing about a kernel server, and nothing
+here has met a NAS. And what is proven is the bound, not a repair: the library still
+reassembles a multi-fragment record wrongly, and the app no longer has a SAF action that
+can ask for one.
+
+In the Waydroid image nothing past `openProxyFileDescriptor` executed. That call needs a
 per-app mount the framework asks vold for, and a kernel with no active SELinux LSM
 rejects it, because the mount options carry SELinux contexts nothing consumes. A second
-app calling `openProxyFileDescriptor` directly failed identically, so this is the image
-and not mammon. The truncate-last ordering and the `ProxyFileDescriptorCallback` write
-loop therefore remain reasoned, not executed; `createUnique` ran on every create above,
-but its collision retry was never driven and stays reasoned for that separate reason.
-`NO_PROXY_FD` is the arm that environment produces — unit-tested, but its message has
-never been read off a screen. `SafContractTest` pins only what needs neither a round
-trip nor that runtime. Nothing about writing BYTES is proven on a phone on either front
-end, and on the SAF side the JVM seam runs above remain the only evidence for the bytes a
-write would move.
+app calling `openProxyFileDescriptor` directly failed identically, so that was the image
+and not mammon. The emulator run above is where the rest of that path finally ran: the
+bytes moved through `ProxyFileDescriptorCallback`, the truncate-last ordering produced
+the single SETATTR the recorder saw after the proxy fd was already open, and
+`createUnique`'s collision retry was driven by the taken name. `NO_PROXY_FD` is the arm
+the Waydroid image produces — unit-tested, but its message has never been read off a
+screen. `SafContractTest` pins only what needs neither a round trip nor that runtime.
+Nothing about writing BYTES is proven on a phone on either front end, and on the SAF side
+over NFSv4.1 the JVM seam runs above remain the only evidence for the bytes a write would
+move.
 
 The end-to-end chain on a rooted Android phone — `su`, the kernel FUSE mount, and the
 inherited descriptor surviving `exec app_process` — is verified since v0.6.6 on one

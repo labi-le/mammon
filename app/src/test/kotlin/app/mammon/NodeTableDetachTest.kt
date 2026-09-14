@@ -89,9 +89,10 @@ class NodeTableDetachTest {
     }
 
     /**
-     * RMDIR needs the subtree form: a listing may have interned children of the
-     * directory, and leaving those names bound would alias them onto a re-created
-     * directory's contents.
+     * Every removal takes the subtree form, UNLINK included: the opcode carries the type
+     * a cached dentry believed, and a permissive server carries a directory away through
+     * REMOVE. A listing may have interned the children, and leaving those names bound
+     * would alias them onto a re-created directory's contents.
      */
     @Test fun `a subtree detach retires interned descendants`() {
         val table = NodeTable()
@@ -108,6 +109,8 @@ class NodeTableDetachTest {
         assertEquals("a name that merely shares a prefix must survive", "/dirt", table.pathOf(sibling))
     }
 
+    /** The narrow form outlived the removals: CREATE and LOOKUP use it to drop one name
+     *  that went stale without retiring what a listing interned beneath it. */
     @Test fun `a non-subtree detach leaves descendants bound`() {
         val table = NodeTable()
         val child = table.intern("/dir/child")

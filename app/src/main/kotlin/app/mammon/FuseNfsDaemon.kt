@@ -6,6 +6,11 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
+/** Long enough to collapse the GETATTR storm behind `ls -l`, short enough to notice a
+ *  change. Internal rather than private to the daemon because [HandleCache.TTL_NANOS]
+ *  derives its bound from it; a second literal is the drift that derivation prevents. */
+internal const val TTL_SECONDS = 5L
+
 /**
  * Serves the FUSE kernel protocol on an already-mounted connection, answering each
  * request out of an [NfsSession]. Reads and writes both: an opcode the backend cannot
@@ -464,23 +469,28 @@ class FuseNfsDaemon(
     }
 
     /**
-     * The VFS resolves the type before FUSE is asked — `do_unlinkat` answers EISDIR for a
-     * directory and `vfs_rmdir` requires one — so neither handler re-checks it, and the
-     * backend's single REMOVE serves both.
+     * `do_unlinkat` answers EISDIR for a directory and `vfs_rmdir` requires one, so the
+     * opcode carries the kernel's CACHED type — the dentry this daemon filled from its own
+     * lookup, valid for [TTL_SECONDS]. That is what the backend is told, sparing a v3
+     * lookup, and it is trusted: a type flip inside the window aims REMOVE at a directory,
+     * which a server that honours it (unfs3 does) will carry out. Linux's own v3 client
+     * picks the procedure off the syscall the same way.
      *
-     * [NodeTable.detach] is what stops the removed name resolving. Without it a re-created
-     * name would keep answering with the dead nodeid.
+     * [NodeTable.detach] is what stops the removed name resolving; without it a re-created
+     * name would keep answering with the dead nodeid. It retires the subtree whatever type
+     * the opcode claimed, because that claim can be wrong in exactly the way above: what a
+     * REMOVE carried away may have been a directory, and its children are interned names.
      */
     private fun unlink(parent: Long, name: String, unique: Long, reply: ByteArray) =
-        removeEntry(parent, name, subtree = false, unique, reply)
+        removeEntry(parent, name, isDirectory = false, unique, reply)
 
     private fun rmdir(parent: Long, name: String, unique: Long, reply: ByteArray) =
-        removeEntry(parent, name, subtree = true, unique, reply)
+        removeEntry(parent, name, isDirectory = true, unique, reply)
 
     private fun removeEntry(
         parent: Long,
         name: String,
-        subtree: Boolean,
+        isDirectory: Boolean,
         unique: Long,
         reply: ByteArray,
     ) {
@@ -488,13 +498,13 @@ class FuseNfsDaemon(
         val parentId = PathCodec.docIdFor(parentPath) ?: return fail(unique, Fuse.ENOENT, reply)
         val path = PathCodec.childPath(parentPath, name) ?: return fail(unique, Fuse.EINVAL, reply)
         try {
-            session.remove(parentId, name)
+            session.remove(parentId, name, isDirectory)
         } catch (e: IOException) {
             return fail(unique, errnoFor(e), reply)
         } catch (e: IllegalArgumentException) {
             return fail(unique, Fuse.EINVAL, reply)
         }
-        nodes.detach(path, subtree)
+        nodes.detach(path, subtree = true)
         ok(unique, reply)
     }
 
@@ -522,11 +532,9 @@ class FuseNfsDaemon(
      * into a silent EIO; the outer one keeps a reachable branch for the plain IOExceptions
      * the RPC stack raises.
      *
-     * [NfsFailure.Unsupported] is EROFS rather than ENOSYS: it only arrives from a
-     * read-only backend, where the filesystem cannot be written at all, which is what
-     * `open()` and `access()` already answer. ENOSYS would instead say the operation does
-     * not exist, and `mkdir` would print "Function not implemented" for a mount whose real
-     * problem is that it is read-only.
+     * [NfsFailure.Unsupported] is ENOSYS rather than EROFS, on the same ground as
+     * [Fuse.refusal]: both backends write, so EROFS would be a false claim about the
+     * filesystem where ENOSYS is a true one about the operation the server refused.
      *
      * [NfsFailure.Timeout] and [NfsFailure.Unreachable] are EIO for the same reason a
      * kernel NFS mount reports a timed-out call as EIO unless it was mounted `softerr`:
@@ -540,7 +548,7 @@ class FuseNfsDaemon(
             is NfsFailure.AlreadyExists -> Fuse.EEXIST
             is NfsFailure.DirectoryNotEmpty -> Fuse.ENOTEMPTY
             is NfsFailure.OutOfSpace -> Fuse.ENOSPC
-            is NfsFailure.Unsupported -> Fuse.EROFS
+            is NfsFailure.Unsupported -> Fuse.ENOSYS
             is NfsFailure.Timeout -> Fuse.EIO
             is NfsFailure.Unreachable -> Fuse.EIO
             is NfsFailure.Server -> Fuse.EIO
@@ -670,9 +678,6 @@ class FuseNfsDaemon(
 
         /** NFS carries mtime in milliseconds, so finer kernel timestamps would be a lie. */
         const val TIME_GRAN_NS = 1_000_000
-
-        /** Long enough to collapse the GETATTR storm behind `ls -l`, short enough to notice a change. */
-        const val TTL_SECONDS = 5L
 
         /** 0755 and 0644. The w and x bits are what access(2) pre-flights consult
          *  before a create or an unlink, so a read-only pair would refuse writes the

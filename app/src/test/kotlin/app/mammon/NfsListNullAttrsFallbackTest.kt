@@ -52,9 +52,9 @@ class NfsListNullAttrsFallbackTest {
         val e = entry("file.txt", false, NfsType.NFS_DIR)
         val statAttrs = entry("probe", true, NfsType.NFS_REG).attributes!!
         var stats = 0
-        val child = NfsAccess.resolveEntry("/", e) { path ->
+        val child = NfsAccess.resolveEntry("/", e) { name ->
             stats++
-            assertEquals("/file.txt", path)
+            assertEquals("file.txt", name)
             statAttrs
         }
         assertEquals("/file.txt", child!!.path)

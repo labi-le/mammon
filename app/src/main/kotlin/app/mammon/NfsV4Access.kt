@@ -304,7 +304,8 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         }
     }
 
-    override fun remove(parentDocId: String, name: String) {
+    /** [isDirectory] is ignored: one REMOVE serves both types, so there is nothing to pick. */
+    override fun remove(parentDocId: String, name: String, isDirectory: Boolean?) {
         val parent = requireNotNull(PathCodec.pathFor(parentDocId))
         val child = component(name)
         failing("$parent/$child") {
@@ -847,11 +848,8 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
     }
 
     /**
-     * Maps the server's status onto the seam's failures, so no frontend parses prose.
-     * Every status a frontend has to act on differently gets its own case: NOTEMPTY
-     * because a recursive delete treats it as ordinary, NOSPC and DQUOT because they must
-     * not look like an I/O fault. What is left in [NfsFailure.Server] carries the status
-     * name in its message for a human, not for a caller to match on.
+     * Maps a failure onto the seam's cases, so no frontend parses prose. A status the
+     * server returned is [failureForV4]'s decision; this wrapper owns the rest.
      *
      * Anything else arriving as an [IOException] is mapped here too: the timeout wrapper
      * [resilient] deliberately never retries earns its own case because both frontends
@@ -867,15 +865,7 @@ class NfsV4Access(target: NfsTarget) : NfsSession {
         try {
             op()
         } catch (e: ChimeraNFSException) {
-            throw when (e.status) {
-                nfsstat.NFSERR_ACCESS, nfsstat.NFSERR_PERM, nfsstat.NFSERR_ROFS ->
-                    NfsFailure.PermissionDenied(what)
-                nfsstat.NFSERR_NOENT, nfsstat.NFSERR_NOTDIR -> NfsFailure.NotFound(what)
-                nfsstat.NFSERR_EXIST -> NfsFailure.AlreadyExists(what)
-                nfsstat.NFSERR_NOTEMPTY -> NfsFailure.DirectoryNotEmpty(what)
-                nfsstat.NFSERR_NOSPC, nfsstat.NFSERR_DQUOT -> NfsFailure.OutOfSpace(what)
-                else -> NfsFailure.Server("${nfsstat.toString(e.status)}: $what")
-            }
+            throw failureForV4(e.status, what)
         } catch (e: NfsFailure) {
             // Already mapped, and an NfsFailure is an IOException: without this it would
             // be caught below and lose the case a frontend acts on.
@@ -1147,6 +1137,27 @@ internal fun recoverable(status: Int, nonIdempotent: Boolean): Boolean =
 
 /** Whether the server asked for a plain retry, which means it performed nothing. */
 internal fun retryAfterDelay(status: Int): Boolean = status in RETRY_AFTER_DELAY
+
+/**
+ * Maps the server's status onto the seam's failures. Every status a frontend has to act
+ * on differently gets its own case: NOTEMPTY because a recursive delete treats it as
+ * ordinary, NOSPC and DQUOT because they must not look like an I/O fault. What is left
+ * in [NfsFailure.Server] carries the status name in its message for a human, not for a
+ * caller to match on.
+ *
+ * Top-level rather than a member of the wrapper that calls it so a test can hold it
+ * against the v3 table with no server and no session.
+ */
+internal fun failureForV4(status: Int, what: String): NfsFailure = when (status) {
+    nfsstat.NFSERR_ACCESS, nfsstat.NFSERR_PERM, nfsstat.NFSERR_ROFS ->
+        NfsFailure.PermissionDenied(what)
+    nfsstat.NFSERR_NOENT, nfsstat.NFSERR_NOTDIR -> NfsFailure.NotFound(what)
+    nfsstat.NFSERR_EXIST -> NfsFailure.AlreadyExists(what)
+    nfsstat.NFSERR_NOTEMPTY -> NfsFailure.DirectoryNotEmpty(what)
+    nfsstat.NFSERR_NOSPC, nfsstat.NFSERR_DQUOT -> NfsFailure.OutOfSpace(what)
+    nfsstat.NFSERR_NOTSUPP -> NfsFailure.Unsupported(what)
+    else -> NfsFailure.Server("${nfsstat.toString(status)}: $what")
+}
 
 /**
  * Whether the OPEN inside a create COMPOUND succeeded, read from its own result rather

@@ -134,7 +134,7 @@ internal object SafNaming {
  * [android.system.OsConstants] carries no `ConstantValue` and is filled by native init, so
  * the numbers read zero off-device and only a named mapping can be pinned by a test.
  */
-internal enum class SafErrno { ACCESS, NOENT, EXISTS, NOTEMPTY, NOSPC, ROFS, IO }
+internal enum class SafErrno { ACCESS, NOENT, EXISTS, NOTEMPTY, NOSPC, NOSYS, IO }
 
 internal fun NfsFailure.safErrno(): SafErrno = when (this) {
     is NfsFailure.PermissionDenied -> SafErrno.ACCESS
@@ -142,7 +142,9 @@ internal fun NfsFailure.safErrno(): SafErrno = when (this) {
     is NfsFailure.AlreadyExists -> SafErrno.EXISTS
     is NfsFailure.DirectoryNotEmpty -> SafErrno.NOTEMPTY
     is NfsFailure.OutOfSpace -> SafErrno.NOSPC
-    is NfsFailure.Unsupported -> SafErrno.ROFS
+    // ENOSYS is a true claim about the operation where EROFS would be a false one about
+    // the filesystem, which both backends do write to.
+    is NfsFailure.Unsupported -> SafErrno.NOSYS
     // Neither gets an errno of its own: a caller holding a proxy fd can do nothing with a
     // read that timed out or lost its connection that it does not already do with a
     // failed one. Both pay off in the message a user sees, not here.
@@ -152,14 +154,14 @@ internal fun NfsFailure.safErrno(): SafErrno = when (this) {
 }
 
 /**
- * [NfsFailure.Unsupported] is a property of the build, not an answer from a server, and
- * UnsupportedOperationException is what every DocumentsProvider default body throws for
- * it. The rest are outcomes of a call that either reached the wire or could not be put
- * on it, which FileNotFoundException carries because that is the exception the write
- * methods declare and the one the system UI renders.
+ * One type for all of them: FileNotFoundException is what the write methods declare and
+ * the only refusal the system UI renders — DocumentsUI drops an
+ * UnsupportedOperationException from New folder and from SAVE without telling the user
+ * anything. The `when` stays exhaustive so a case added later is decided rather than
+ * inheriting this one.
  */
 internal fun NfsFailure.asSafException(message: String): Exception = when (this) {
-    is NfsFailure.Unsupported -> UnsupportedOperationException(message)
+    is NfsFailure.Unsupported,
     is NfsFailure.PermissionDenied,
     is NfsFailure.NotFound,
     is NfsFailure.AlreadyExists,

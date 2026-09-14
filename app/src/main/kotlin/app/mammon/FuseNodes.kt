@@ -44,9 +44,10 @@ internal class NodeTable {
      * Retires the name [path] so a later allocation of it gets a fresh id, keeping the
      * tombstoned node alive while the kernel still holds references to it.
      *
-     * [subtree] also retires every descendant name. UNLINK never needs it — a file has
-     * no descendants — while RMDIR does, because a listing may have interned children
-     * that would otherwise keep aliasing a re-created directory.
+     * [subtree] also retires every descendant name. A removal passes it whatever type the
+     * caller believed it was removing, because that belief comes from a cached dentry and
+     * can be wrong: a listing may have interned children that would otherwise keep
+     * aliasing a re-created directory.
      */
     fun detach(path: String, subtree: Boolean) = synchronized(lock) {
         retire(path)

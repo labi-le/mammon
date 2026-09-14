@@ -15,13 +15,21 @@ import org.junit.Test
  */
 class NfsVersionSelectionTest {
 
-    private class Fake : ReadOnlyNfsSession {
+    private class Fake : NfsSession {
         var closed = false
+        override val implementsWrites = false
         override fun probeRoot(): NodeAttrs? = null
         override fun stat(docId: String): NodeAttrs? = null
         override fun list(docId: String): List<ChildEntry> = emptyList()
         override fun openFile(docId: String): OpenedFile = throw NfsFailure.NotFound(docId)
+        override fun createFile(parentDocId: String, name: String): CreatedFile = unused()
+        override fun makeDirectory(parentDocId: String, name: String): NodeAttrs = unused()
+        override fun remove(parentDocId: String, name: String, isDirectory: Boolean?): Unit = unused()
+        override fun setAttributes(docId: String, size: Long?, modifiedMillis: Long?): NodeAttrs =
+            unused()
         override fun close() { closed = true }
+
+        private fun unused(): Nothing = error("version selection calls no mutation")
     }
 
     private val target = NfsTarget(ExportSpec("192.0.2.1", "/export", 2049), AuthIdentity.DEFAULT)

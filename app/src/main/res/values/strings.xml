@@ -79,5 +79,5 @@
     <string name="err_nfs_exists">Something with that name already exists on the server.</string>
     <string name="err_nfs_not_empty">The folder is not empty — delete what is inside it first.</string>
     <string name="err_nfs_no_space">The server has no space left.</string>
-    <string name="err_nfs_read_only">This share is connected over NFSv3, which Mammon cannot write to.</string>
+    <string name="err_nfs_unsupported">The server does not support this operation on this share.</string>
 </resources>

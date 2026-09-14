@@ -527,6 +527,11 @@ class FuseNfsDaemon(
      * `open()` and `access()` already answer. ENOSYS would instead say the operation does
      * not exist, and `mkdir` would print "Function not implemented" for a mount whose real
      * problem is that it is read-only.
+     *
+     * [NfsFailure.Timeout] and [NfsFailure.Unreachable] are EIO for the same reason a
+     * kernel NFS mount reports a timed-out call as EIO unless it was mounted `softerr`:
+     * ETIMEDOUT out of a filesystem syscall is the rarer contract, and every caller
+     * already handles EIO. ENOTCONN would be worse still: the mount itself is live.
      */
     private fun errnoFor(e: IOException): Int = when (e) {
         is NfsFailure -> when (e) {
@@ -536,6 +541,8 @@ class FuseNfsDaemon(
             is NfsFailure.DirectoryNotEmpty -> Fuse.ENOTEMPTY
             is NfsFailure.OutOfSpace -> Fuse.ENOSPC
             is NfsFailure.Unsupported -> Fuse.EROFS
+            is NfsFailure.Timeout -> Fuse.EIO
+            is NfsFailure.Unreachable -> Fuse.EIO
             is NfsFailure.Server -> Fuse.EIO
         }
         else -> Fuse.EIO

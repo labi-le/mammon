@@ -143,14 +143,20 @@ internal fun NfsFailure.safErrno(): SafErrno = when (this) {
     is NfsFailure.DirectoryNotEmpty -> SafErrno.NOTEMPTY
     is NfsFailure.OutOfSpace -> SafErrno.NOSPC
     is NfsFailure.Unsupported -> SafErrno.ROFS
+    // Neither gets an errno of its own: a caller holding a proxy fd can do nothing with a
+    // read that timed out or lost its connection that it does not already do with a
+    // failed one. Both pay off in the message a user sees, not here.
+    is NfsFailure.Timeout -> SafErrno.IO
+    is NfsFailure.Unreachable -> SafErrno.IO
     is NfsFailure.Server -> SafErrno.IO
 }
 
 /**
  * [NfsFailure.Unsupported] is a property of the build, not an answer from a server, and
  * UnsupportedOperationException is what every DocumentsProvider default body throws for
- * it. The rest are server refusals, which FileNotFoundException carries because that is
- * the exception the write methods declare and the one the system UI renders.
+ * it. The rest are outcomes of a call that either reached the wire or could not be put
+ * on it, which FileNotFoundException carries because that is the exception the write
+ * methods declare and the one the system UI renders.
  */
 internal fun NfsFailure.asSafException(message: String): Exception = when (this) {
     is NfsFailure.Unsupported -> UnsupportedOperationException(message)
@@ -159,6 +165,8 @@ internal fun NfsFailure.asSafException(message: String): Exception = when (this)
     is NfsFailure.AlreadyExists,
     is NfsFailure.DirectoryNotEmpty,
     is NfsFailure.OutOfSpace,
+    is NfsFailure.Timeout,
+    is NfsFailure.Unreachable,
     is NfsFailure.Server,
     -> FileNotFoundException(message)
 }

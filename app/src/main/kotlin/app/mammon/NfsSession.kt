@@ -58,6 +58,22 @@ sealed class NfsFailure(message: String) : IOException(message) {
      */
     class Unsupported(operation: String) : NfsFailure("$operation is not supported by this NFS backend")
 
+    /**
+     * The call outran its deadline; whether the server applied it is unknown. [Server]
+     * is an answer the server gave, so there the operation demonstrably did not happen —
+     * which is why this cannot fold into it.
+     */
+    class Timeout(what: String) : NfsFailure("timed out: $what")
+
+    /**
+     * The server could not be reached, or the connection to it could not be remade. The
+     * connection is the separator from [Timeout], not the request: there it stayed up and
+     * only the answer never came, while here it is gone and this call will not get it
+     * back. So whether the server applied it is unknown too — it may have gone before the
+     * call was seen, or after it was carried out and the reply died with the socket.
+     */
+    class Unreachable(what: String) : NfsFailure("unreachable: $what")
+
     /** Everything else the server said, so the `when` above it can stay exhaustive. */
     class Server(what: String) : NfsFailure(what)
 }

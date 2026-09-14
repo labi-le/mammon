@@ -40,9 +40,16 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   (which means an NFSv4.1 server), writable — create, delete and
   write-mode `openDocument` through `StorageManager.openProxyFileDescriptor`, so a
   server refusal reaches the writer's own `write(2)` instead of a log line after its fd
-  is gone. Row flags are optimistic by design and the exception a mutation throws is the
-  real contract; rename is the one operation withheld, since the seam has no RENAME. Two
-  protocol versions sit behind the
+  is gone. The v4.1 session also survives an idle period: the connection is rebuilt
+  transparently on the next call, and that recovery never re-sends a create, MKDIR or
+  REMOVE, so a mutation is reported failed rather than silently performed twice — the one
+  case measured end to end. A server restart rebuilds the connection the same way, but
+  only metadata comes back with it: the restarted server answers READ and WRITE with
+  `NFS4ERR_GRACE` for its grace period (90 s by default on Linux nfsd), and that status
+  buys a single retry 500 ms later, so reads and writes keep failing until grace
+  lifts. Row flags are optimistic by design and the exception a
+  mutation throws is the real contract; rename is the one operation withheld, since the
+  seam has no RENAME. Two protocol versions sit behind the
   `NfsSession` interface and are chosen per export with no UI switch — NFSv4.1 over
   `org.dcache:nfs4j-core`/`oncrpc4j-core` first, NFSv3 over `com.emc.ecs:nfs-client`
   as the fallback for servers that still run rpcbind and mountd. Against an NFSv3-only

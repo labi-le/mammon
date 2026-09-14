@@ -489,6 +489,8 @@ class NfsDocumentsProvider : DocumentsProvider() {
         is NfsFailure.DirectoryNotEmpty -> context!!.getString(R.string.err_nfs_not_empty)
         is NfsFailure.OutOfSpace -> context!!.getString(R.string.err_nfs_no_space)
         is NfsFailure.Unsupported -> context!!.getString(R.string.err_nfs_read_only)
+        is NfsFailure.Timeout -> context!!.getString(R.string.err_timeout)
+        is NfsFailure.Unreachable -> context!!.getString(R.string.err_unreachable)
         is NfsFailure.Server ->
             context!!.getString(R.string.err_generic, e.message ?: e.javaClass.simpleName)
     }

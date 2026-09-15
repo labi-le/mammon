@@ -36,7 +36,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # The action's default package set is `tools platform-tools`, and Google stopped
+      # serving the deprecated `tools` package on 2026-09-14, so the default now fails.
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: platform-tools
 
       - name: Install SDK packages
         run: |

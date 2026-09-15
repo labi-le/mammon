@@ -22,8 +22,8 @@ android {
         applicationId = "app.mammon"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.8.0"
+        versionCode = 22
+        versionName = "0.9.0"
     }
 
     // Local releases sign when keystore.properties exists; absent file keeps them unsigned (CI parity).

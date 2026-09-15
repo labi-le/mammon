@@ -80,29 +80,111 @@ export or this non-empty directory, so a second call could only reach an object 
 took the name after the user's own deletion was refused, and never sending a destructive
 call the server has already declined is the side to be wrong on.
 
-One v3 number is a correctness bound and not a tuning knob: `UNFRAGMENTED_REPLY_MAX`,
-61440, which caps what a v3 READ asks for and what a READDIR or READDIRPLUS page is
-allowed to cost. It exists because `com.emc.ecs:nfs-client` cannot read a reply the
-server split over several RPC record fragments — `RecordMarkingUtil.removeRecordMarking`
-reads each fragment's four-byte header and then advances its cursor by the fragment size
-alone, so every fragment after the first is taken four bytes early and the reassembled
-record is garbage; the library reports it as a connection error, retries the same xid
-once, and the transfer dies. A single-fragment record is parsed correctly, which is why
-nothing saw this until a reply grew past one. The threshold is a property of the
-server's RPC layer: libtirpc and its ntirpc fork close a fragment every 65532 bytes of
-record payload, which covers unfs3 and nfs-ganesha, and was measured on unfs3 — a READ
-asking for 524288 bytes against a 300 KB file came back as a 307328-byte reply split
-`[65532, 65532, 65532, 65532, 45200]`, which a client that walks record marks correctly
-reassembles byte-exact. The Linux kernel server writes one record marker per reply,
-which is read off its implementation and not measured here. A READ reply carries 128
-bytes of RPC and NFS header plus up to three of padding, so 61440 is the largest page
-multiple that still fits under the threshold. Raising it does not merely cost
-performance, it corrupts reads, and clamping the SERVER's `rtmax` instead only hides the
-client defect on the one server that was clamped. Keeping the request small is the side
-to err on: a smaller reply is another round trip, a misassembled one is wrong bytes. The
-write direction needs no such bound — the library's own record marking is correct, and
-it splits only above its 1 MiB MTU — and v4.1 is untouched, so `NFS_READ_CHUNK` stays
-512 KiB there.
+The v3 read path used to carry a correctness bound instead of a tuning knob: a
+61440-byte cap on what a READ asked for and on what a READDIR or READDIRPLUS page was
+allowed to cost, so that no reply could be split across RPC record fragments. The cap is
+gone, because the two defects it existed to avoid are repaired.
+`com.emc.ecs:nfs-client` could not read a reply the server had split, and it could not
+for two independent reasons — three, counting the one further down that no server
+measured here reaches. `RecordMarkingUtil.removeRecordMarking` consumed each
+fragment's four-byte record mark and copied the payload, then advanced its cursor by that
+payload's size ALONE, so every fragment after the first was taken four bytes early and
+the reassembled record was garbage. And `RPCRecordDecoder`, the netty-3 `FrameDecoder`
+feeding it, could not assemble a record whose fragments arrived over more than one socket
+read: on a non-last fragment it consumed the mark, skipped the payload, accumulated the
+length and returned `null` with the reader index ADVANCED, and
+`FrameDecoder.updateCumulation` then dropped exactly that consumed prefix, so the last
+fragment's `readerIndex(readerIndex() - _recordLength)` rewound over bytes no longer in
+the buffer — index below zero, `IndexOutOfBoundsException` into
+`ClientIOHandler.exceptionCaught`, connection closed. Either defect reached the caller as
+a connection error on a retried xid and killed the transfer. A single-fragment reply was
+immune to both, which is why nothing saw either until a reply grew past one fragment.
+
+The second defect is the cautionary one, and how it was finally found is in the
+Verification status section below. Its arithmetic is correct — it counts `4 + fragSize`
+per fragment, which is exactly right — so a reading of the class cleared it, and the
+first round of this repair deliberately left it in the jar on the strength of that
+reading. The bug was never in the arithmetic but in what the class assumes about the
+framework under it, and reading the class cannot show that.
+
+A third defect came out of reviewing the reassembly repair itself, and no bug report
+upstream names it. `Xdr.putBytes` ends in `skip(len)`, which rounds the destination
+offset UP to a four-byte XDR block, and upstream's reassembly calls it once per
+fragment: a non-last fragment whose payload is not a multiple of four leaves one to
+three zero bytes at the seam and over-counts the reassembled record by exactly that
+padding. Nothing throws, nothing reads short — the reply body is simply wrong, which is
+the worst way for a client to be wrong. It is unreachable against every server measured
+here, because their fragments are 4-aligned, and RFC 1831 requires no such alignment, so
+this is an alignment dependency to remove rather than to document: the shadow tracks the
+output offset itself instead of resting on a property of servers that merely happens to
+hold.
+
+All three defects are corrected in this app by SHADOWING two classes. `RecordMarkingUtil`
+and `RPCRecordDecoder` are vendored into
+`app/src/main/java/com/emc/ecs/nfsclient/network/` — upstream Apache-2.0 text with its
+provenance kept, in the upstream package and at the upstream visibility, so each is the
+definition the rest of the library links against. The record-marking shadow walks the
+caller's array with an input cursor that counts each record mark and writes at an output
+offset it tracks itself, so neither the four-byte-early read nor the padded seam survives
+and the whole-buffer clone upstream used as a cursor is gone with them; the decoder's
+keeps each fragment's bytes with its record mark as the fragment arrives and assembles
+them when the last one lands, instead of trusting a buffer the framework is entitled to
+compact underneath it. That accumulator is why the decoder also carries a bound upstream
+had no need of: upstream held about one fragment, this one holds every fragment of a
+record until the last, so a peer that sent non-last fragments forever would grow the
+list without limit, and deleting `UNFRAGMENTED_REPLY_MAX` had already removed the last
+bound at any other layer. `MAX_RECORD_LENGTH` is 2 MiB — four times the 512 KiB
+`NFS_READ_CHUNK` ceiling that bounds the largest reply this app can ask a server for —
+and a record past it fails with netty's `TooLongFrameException` rather than an OOM,
+which is a refusal the caller sees instead of a process the platform kills. Two definitions
+of one class do not resolve to a first-wins — the dex merge fails on D8's
+`Type ... is defined multiple times` — so `stripShadowedNfsClient` repacks the resolved
+jar without either class and the module compiles against that. The strip fails the build
+both when an entry is absent and when its bytes no longer match a pinned SHA-256, and the
+second half is the one that matters most: a version bump that renames the class stops the
+build, and so does one that REPAIRS it. Presence alone could not catch a repair — a
+repaired class is still there to be found — and our copy would go on shadowing it,
+reverting somebody else's fix in silence.
+
+The two alternatives are both worse. Living with the bound cost six READs where one
+would do, but the real objection is that it could not be right — 61440 was the largest
+4 KiB multiple left under libtirpc's 65532-byte fragment flush once a READ reply's 128
+bytes of header and up to three of padding were subtracted, which makes it one RPC
+implementation's behaviour standing in for every server's. libtirpc and its ntirpc fork
+cover unfs3 and nfs-ganesha; the Linux kernel server writes one record marker per reply,
+read off its implementation and not measured here; a server flushing at some other size
+would have been misread with the bound in place, which is the kind of guess a client
+should not be making. Vendoring the library instead would buy 171 classes of maintenance
+— its last release was July 2016 — for four bytes of arithmetic, one buffering
+assumption and one padded seam. Shadowing costs two of those 171 files, plus a build step
+that fails loudly when upstream touches either of them. How that figure moved is part of
+the case and not a footnote to it: the technique was argued for on four bytes of
+arithmetic in one class, and each round of work since has found the next thing wrong in
+the same path — a second class, a third defect nobody had reported, and a ceiling of our
+own to keep the fix from trading one failure for another. Owning a class means owning
+everything wrong with it, including what is not yet known, and a reader weighing
+shadowing against vendoring or against living with the bound should weigh that growth
+with the two files. Making the dependency arrive as a file carries one
+further price: the three runtime dependencies the POM declares no longer come in
+transitively and are declared here instead, and two of them are NOT at the POM's
+versions. `commons-lang3` is 3.20.0 against the POM's 3.12.0 and `slf4j-api` is 2.0.19
+against its 1.7.36, because writing the coordinates down is what put them in lint's view,
+and this project's lint gate allows zero new findings, so the versions the POM names
+could not stay. netty stays at the POM's 3.10.6.Final: that is the API the library is
+compiled against.
+
+Read sizing becomes what write sizing already was: `readChunk()` mirrors `writeChunk()`,
+taking FSINFO `rtmax` clamped by `NFS_READ_CHUNK` (512 KiB), caching it for the session
+and falling back to a fixed ceiling when FSINFO fails, so the server states the size
+instead of the app assuming one. Raising `NFS_READ_CHUNK` is no longer a one-line change:
+the decoder refuses any record past `MAX_RECORD_LENGTH`, so a read ceiling raised toward
+2 MiB spends the factor of four this cap was chosen to keep, and one at or past 2 MiB
+fails the unit suite before it can fail every full-size reply, `RPCRecordDecoderTest`
+asserting the two constants against each other for that reason. The READDIR and
+READDIRPLUS page counts stay where they
+were, now as tuning numbers carrying no correctness claim. The write direction never
+needed a bound — the library's own record marking is correct, and it splits only above
+its 1 MiB MTU — and v4.1 is untouched.
 
 On the SAF side the consequence worth knowing is that a row's `FLAG_*` is advisory by
 specification: deriving it honestly would need an NFSv4 ACCESS per listed child, which
@@ -498,28 +580,55 @@ APK put no CREATE, MKDIR, REMOVE or RMDIR on the wire at all, every mutating ste
 refused, which is what makes the pair a comparison. An emulator against unfs3 is neither
 a phone nor a NAS.
 
-That run predates the fragment bound, and its rig's unfs3 had been rebuilt to advertise
-`rtmax` 61440, so no READ reply could grow past one fragment. The rebuild covered only
-that side: `rtmax` says nothing about a READDIRPLUS page, and the build still asked for
-64 KiB of one, past the 65532-byte threshold — so on the listing side the defect went
-unprovoked rather than excluded, the rig's directories being small. The bound got its
-own A/B afterwards on the same rig, with unfs3's transfer sizes back at their stock
-524288 for rtmax, rtpref, wtmax and wtpref alike. There the previous read-only APK,
-which predates the bound, asks for a 524288-byte READ, receives one status-0 reply split
-into five record fragments, replays the same xid on a fresh connection and dies with
-"RPC error: tcp IO error on the connection", having read nothing back — the read is the
-one step of the scenario it fails. The build carrying the bound reads the same 300 KB
-byte-exact in six READs of 61440 at consecutive offsets and writes it back byte-exact in
-one CREATE, one SETATTR and five FILE_SYNC WRITEs — the write side needs no bound of its
-own — passing all eleven steps, with not one RPC error line over a cleared logcat for
-the read leg. A host-side client that walks record marks correctly reassembles the
-identical five-fragment reply byte-exact, which puts the fault in the library's
-arithmetic rather than in the server. Two limits belong with that result. The rig
-measures libtirpc's 65532-byte flush and nothing else — the host's kernel nfsd is
-unreachable from the emulator, so it says nothing about a kernel server, and nothing
-here has met a NAS. And what is proven is the bound, not a repair: the library still
-reassembles a multi-fragment record wrongly, and the app no longer has a SAF action that
-can ask for one.
+That run predates the record-marking repair, and its rig's unfs3 had been rebuilt to
+advertise `rtmax` 61440, so no READ reply could grow past one fragment. The rebuild
+covered only that side: `rtmax` says nothing about a READDIRPLUS page, and the build
+still asked for 64 KiB of one, past the 65532-byte threshold — so on the listing side
+the defect went unprovoked rather than excluded, the rig's directories being small. The
+61440 bound that followed got its own A/B afterwards on the same rig, with unfs3's
+transfer sizes back at their stock 524288 for rtmax, rtpref, wtmax and wtpref alike.
+There the read-only APK of the time, which predated the bound, asked for a 524288-byte
+READ, received one status-0 reply of 307328 bytes split into five record fragments
+`[65532, 65532, 65532, 65532, 45200]`, replayed the same xid on a fresh connection and
+died with "RPC error: tcp IO error on the connection", having read nothing back — the
+read was the one step of the scenario it failed. The build carrying the bound read the
+same 300 KB byte-exact in six READs of 61440 at consecutive offsets and wrote it back
+byte-exact in one CREATE, one SETATTR and five FILE_SYNC WRITEs — the write side needed
+no bound of its own — passing all eleven steps, with not one RPC error line over a
+cleared logcat for the read leg. A host-side client that walks record marks correctly
+reassembled that identical five-fragment reply byte-exact, which put the fault in the
+library rather than in the server — read at the time as its arithmetic alone, which
+turned out to be half of it.
+
+Two limits belong with that history. The rig measured libtirpc's 65532-byte flush and
+nothing else — the host's kernel nfsd is unreachable from the emulator, so it says
+nothing about a kernel server, and nothing here has met a NAS. And what it proved was
+the bound, which was a workaround and not a repair: six READs were the price of never
+asking for a reply the library would misread.
+
+The repair's own first run on that rig, at unfs3's stock `rtmax = 524288`, FAILED, and
+that failure is the most useful measurement in this section. Removing the clamp did
+exactly what it was supposed to: one `READ off=0 count=524288` where the bounded build
+had sent six of 61440, answered by the same five fragments
+`[65532, 65532, 65532, 65532, 45200]`. The app then read back ZERO bytes — not wrong
+bytes, none — and `dexdump` on the installed APK showed exactly one definition of
+`RecordMarkingUtil`, the shadowed one, so this was not a shadow that failed to link. It
+was the second defect: with the reassembly repaired, what remained was `RPCRecordDecoder`,
+which cannot assemble a record whose fragments arrive over more than one socket read. It
+threw `IndexOutOfBoundsException` on the last fragment's rewind, over bytes `FrameDecoder`
+had already dropped, closing the connection, failing the READ `NETWORK_ERROR` and
+re-sending the same xid onto a fresh connection to fail identically. That run took 26
+minutes and refuted a verdict reached by reading the class, which the whole first round
+had rested on; it is why `RPCRecordDecoder` is shadowed too.
+
+The case that decides the repair is the one the bounded build could not ask for: a 300 KB
+READ answered as that 307328-byte five-fragment reply, reassembled byte-exact by the app
+itself, with the fragments arriving over as many socket reads as the network splits them
+into — the condition the first run died on. Until such a run is recorded here, what
+stands behind the repair is
+`RecordMarkingReassemblyTest`, which fails against the upstream arithmetic,
+`RPCRecordDecoderTest`, which fails against the upstream decoder with the exception the
+rig saw, and the host-side reassembly above; no device number is claimed for either class.
 
 In the Waydroid image nothing past `openProxyFileDescriptor` executed. That call needs a
 per-app mount the framework asks vold for, and a kernel with no active SELinux LSM

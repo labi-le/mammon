@@ -65,6 +65,9 @@ class NfsAccess(target: NfsTarget) : NfsSession {
     /** Zero until the write ceiling is resolved. */
     @Volatile private var writeCeiling = 0
 
+    /** Zero until the read ceiling is resolved. */
+    @Volatile private var readCeiling = 0
+
     /** Export-absolute path to filehandle, so an operation on a directory this session
      *  already walked costs no LOOKUP. */
     private val handles = HandleCache()
@@ -544,11 +547,15 @@ class NfsAccess(target: NfsTarget) : NfsSession {
     /** One READ or WRITE per call against a resolved filehandle. */
     private inner class Handle(private val fh: ByteArray) : NfsFile {
 
-        /** Short by design for a large [len]: see [UNFRAGMENTED_REPLY_MAX]. */
+        /**
+         * Short for a [len] above [readChunk] — the server's rtmax clamped by
+         * [NFS_READ_CHUNK], so either bound shortens it — after which the caller
+         * resumes from the offset the returned count leaves it at.
+         */
         override fun readAt(offset: Long, dst: ByteArray, off: Int, len: Int): Int {
             if (len == 0) return 0
             return failing({ "read at $offset" }) {
-                val request = nfs.makeReadRequest(fh, offset, minOf(len, UNFRAGMENTED_REPLY_MAX))
+                val request = nfs.makeReadRequest(fh, offset, minOf(len, readChunk()))
                 nfs.wrapped_getRead(request, dst, off).bytesRead.coerceAtLeast(0)
             }
         }
@@ -594,6 +601,20 @@ class NfsAccess(target: NfsTarget) : NfsSession {
         return chunk
     }
 
+    /**
+     * The read side of [writeChunk], against rtmax, and cached for the same reasons but
+     * not defaulted to the same number: over-asking a READ is free where over-sizing a
+     * WRITE is not, so the two fallbacks differ — see [READ_CEILING_FALLBACK].
+     */
+    private fun readChunk(): Int {
+        val cached = readCeiling
+        if (cached != 0) return cached
+        val rtmax = runCatching { nfs.nfsFsInfo.rtmax }.getOrNull()?.takeIf { it > 0 }
+        val chunk = rtmax?.coerceAtMost(NFS_READ_CHUNK.toLong())?.toInt() ?: READ_CEILING_FALLBACK
+        readCeiling = chunk
+        return chunk
+    }
+
     override fun close() {
         // An NfsFile outliving the session keeps this instance, and this map, reachable.
         handles.clear()
@@ -605,31 +626,30 @@ class NfsAccess(target: NfsTarget) : NfsSession {
     }
 
     companion object {
-        /**
-         * Ceiling on one v3 reply, payload and XDR overhead together, keeping it inside a
-         * single RPC record fragment. Raising it corrupts data:
-         * `RecordMarkingUtil.removeRecordMarking` advances its cursor by the fragment size
-         * and not by header-plus-size, so every fragment after the first is read 4 bytes
-         * early. libtirpc and its ntirpc fork (unfs3, nfs-ganesha) close a fragment every
-         * 65532 bytes; a READ reply adds 128 bytes of RPC and NFS header plus up to 3 of
-         * padding, and 61440 is the largest page multiple that fits in what is left.
-         */
-        internal const val UNFRAGMENTED_REPLY_MAX = 61440
-
         /** Directory information only, so it stays a sub-budget of the whole page. */
         private const val READDIRPLUS_DIR_COUNT = 32 * 1024
-        private const val READDIRPLUS_MAX_COUNT = UNFRAGMENTED_REPLY_MAX
+
+        /** Bytes of reply one listing page may cost, matching the v4 backend's
+         *  [NfsV4Access.READDIR_MAX_COUNT]. A server is free to answer with less. */
+        private const val READDIRPLUS_MAX_COUNT = 64 * 1024
 
         /** A truncated page costs a cookie round trip, which the loop already does. */
-        private const val READDIR_COUNT = UNFRAGMENTED_REPLY_MAX
+        private const val READDIR_COUNT = 64 * 1024
 
         /** 0644 and 0755, spelled in binary because Kotlin has no octal literal. */
         private const val CREATE_MODE = 0b110_100_100L
         private const val DIRECTORY_MODE = 0b111_101_101L
 
-        /** RFC 1813 makes FSINFO mandatory, so this is reached only when it fails;
-         *  32 KiB is the classic NFSv3 transfer size no server refuses. */
+        /** RFC 1813 makes FSINFO mandatory, so these are reached only when it fails.
+         *  The write side keeps the classic 32 KiB because a count over wtmax is a short
+         *  write and the caller's loop re-sends the whole remainder, so the excess is
+         *  paid in wire bytes, once per iteration. */
         private const val WRITE_CEILING_FALLBACK = 32 * 1024
+
+        /** Larger on purpose: RFC 1813 answers a count over rtmax with a short read, so
+         *  an over-ask sends no extra bytes and only under-asking costs round trips.
+         *  Kept at or above the 61440-byte request the deleted fragment bound forced. */
+        private const val READ_CEILING_FALLBACK = 64 * 1024
 
         /** Statuses refusing a removal on policy rather than on the entry's type, so the
          *  call for the other type would be refused too. */

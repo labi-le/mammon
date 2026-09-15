@@ -8,14 +8,19 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Bytes per NFS READ the app is willing to ask for, and the pump buffer size the
- * provider matches to it. Only a ceiling: the session clamps every payload to what
- * CREATE_SESSION actually granted, which may be smaller.
+ * provider matches to it. Only a ceiling: the v4.1 session clamps every payload to what
+ * CREATE_SESSION granted, the v3 session to FSINFO rtmax.
+ *
+ * It also sizes resident memory, so a bump for round-trip reasons is not free:
+ * `FuseNfsDaemon.MAX_WRITE` is this constant and its `BUFFER` is that plus 64 KiB, held
+ * as a request and a reply buffer per serving thread and per `serve` — 5.6 MiB at this
+ * value across the daemon's four workers.
  */
 const val NFS_READ_CHUNK = 512 * 1024
 
 /**
- * Bytes per NFS WRITE the app is willing to send. Only a ceiling: the session clamps
- * every payload to what CREATE_SESSION actually granted, which may be smaller.
+ * Bytes per NFS WRITE the app is willing to send. Only a ceiling: the v4.1 session
+ * clamps every payload to what CREATE_SESSION granted, the v3 session to FSINFO wtmax.
  */
 const val NFS_WRITE_CHUNK = 1024 * 1024
 

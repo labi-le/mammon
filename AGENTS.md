@@ -19,6 +19,7 @@ nix-shell --run './gradlew :app:lintDebug'
 | `build.gradle.kts` | Root build script; plugin versions |
 | `app/` | The single module: application code, manifest, resources |
 | `app/src/main/kotlin/app/mammon/` | Kotlin sources: activity UI, SAF documents provider, NFSv4.1 and NFSv3 session implementations behind one interface, the FUSE daemon serving that same interface, root-mount plumbing, prefs/spec/identity parsing |
+| `app/src/main/java/com/emc/ecs/nfsclient/network/` | Two vendored classes, in their upstream package so they shadow the library's: `RecordMarkingUtil`, Apache-2.0 text with the record-mark arithmetic corrected and the reassembly's output offset tracked rather than left to `Xdr.skip` to pad, and `RPCRecordDecoder`, the same text holding each fragment's bytes itself instead of trusting netty's cumulation buffer to still hold them, under a 2 MiB record cap. AGP compiles this root beside the Kotlin one with no source-set configuration; `stripShadowedNfsClient` in `app/build.gradle.kts` removes both copies from the jar and pins both by SHA-256 |
 | `app/src/main/res/` | Resources: M3 theme (`Theme.Mammon`), strings, adaptive launcher icons |
 | `app/build.gradle.kts` | Module build config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35 |
 | `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |
@@ -70,13 +71,32 @@ directions from [`docs/guides/architecture.md`](./docs/guides/architecture.md):
   the server rejects a handle or a removal there succeeds; its listing falls back from
   READDIRPLUS — optional in RFC 1813, and refused outright by real servers such as
   unfs3 — to READDIR plus a LOOKUP per child, latched for the session so the refusal
-  costs one call and not one per directory. Every v3 READ and listing page is capped at
-  61440 bytes so that no reply is split across RPC record fragments, which the client
-  library reassembles wrongly — a correctness bound and not a tuning number; the guide
-  says why. The two rows built without a session, the SAF root and the export root
-  itself, carry create because answering them costs no round trip precisely by not
-  asking a backend; now that both backends write, what they advertise is what a save
-  into the export root does.
+  costs one call and not one per directory. A v3 READ is sized off FSINFO `rtmax` capped
+  at 512 KiB, the way a v3 WRITE is already sized off `wtmax`, and the listing page
+  counts are tuning numbers, because the two library defects that used to bound them are
+  repaired here rather than avoided: `RecordMarkingUtil` advanced its cursor by a
+  fragment's payload size and not by the four-byte record mark plus the payload, so it
+  read every fragment after the first four bytes early, and `RPCRecordDecoder` — whose
+  arithmetic is right — returned from `decode` with netty's cumulation buffer advanced
+  past a fragment it had consumed, which `FrameDecoder` then discarded, so the rewind over
+  the finished record threw and killed the connection. A third defect came out of
+  reviewing the reassembly repair and is reported by nobody upstream: it copied each
+  fragment through `Xdr.putBytes`, whose closing `skip` rounds the destination offset up
+  to a four-byte XDR block, so a non-last fragment whose payload is not a multiple of
+  four left one to three zero bytes at the seam and over-counted the record, with no
+  exception and no short read — unreachable only because every server measured here
+  sends 4-aligned fragments, which RFC 1831 does not require. The app now shadows both
+  classes, under `app/src/main/java/com/emc/ecs/nfsclient/network/` with upstream text
+  and the minimum change each needs, and strips both from the dependency jar at build
+  time so D8 links one definition of each; the strip pins the stripped entries by
+  SHA-256, so an upstream repair fails the build instead of being reverted by our copy.
+  The decoder now holds every fragment until the last one, where upstream held about
+  one, so it also bounds a record at `MAX_RECORD_LENGTH` (2 MiB, four times the 512 KiB
+  read ceiling) and fails past it with `TooLongFrameException`. The guide says
+  why two classes and not the whole library. The two rows built without a session, the
+  SAF root and the export root itself, carry create because answering them costs no round
+  trip precisely by not asking a backend; now that both backends write, what they
+  advertise is what a save into the export root does.
   AUTH_SYS sends a configured identity (uid, gid, supplementary gids), because
   root_squash — the export default — maps uid 0 to nobody and refuses every write.
   There is no "allow writes" toggle and never will be: writability is a property of
@@ -127,6 +147,18 @@ nix-shell --run './gradlew :app:testDebugUnitTest'
 exercise, nothing more. What a review must do instead is in
 [`docs/guides/workflow.md`](./docs/guides/workflow.md) — read it before your first edit;
 the workflow section below is the summary, not the argument.
+
+**And a clean source read is not one either.** The NFSv3 record-marking repair was
+agreed with `RPCRecordDecoder` exempted from shadowing, because its accumulation
+arithmetic reads as correct — and it is correct. The class was broken anyway: upstream's
+`decode` returned with the cumulation buffer's reader index advanced past a consumed
+fragment, netty-3's `FrameDecoder` discards exactly those bytes, and the last fragment's
+rewind over the whole record therefore went below zero and threw. One
+rig run disproved the exemption: a single READ for 524288 bytes, the server answering
+five fragments `[65532, 65532, 65532, 65532, 45200]`, and the app reading back ZERO bytes
+with the connection closed under it. A defect that lives in a class's interaction with
+its framework cannot be seen by reading that class, however carefully; only running it
+shows it. Read a verdict reached by reading as a hypothesis, and measure it.
 
 If an LSP server is unavailable, explicitly report that limitation.
 

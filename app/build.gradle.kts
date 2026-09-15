@@ -6,6 +6,8 @@ import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.File
 import java.util.Properties
+import java.security.MessageDigest
+import java.util.zip.ZipFile
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -132,11 +134,139 @@ kotlin {
     }
 }
 
+// nfs-client 1.1.0 reassembles multi-fragment RPC replies four bytes off, and its record decoder
+// only assembles a record whose every fragment arrives in one netty cumulation pass; the fixed
+// copies of RecordMarkingUtil and RPCRecordDecoder live in app/src/main/java. D8 rejects two
+// definitions of one class, so the jar is repacked without those entries, with coordinates left
+// as a declaration to bump.
+val nfsClientOriginal: Configuration by configurations.creating { isTransitive = false }
+
+// SHA-256 of each entry's uncompressed bytes as published in com.emc.ecs:nfs-client:1.1.0.
+// Pinning content, not presence, is what makes an upstream repair visible: a fixed class keeps
+// its path, so a presence check would pass and our copy would silently revert the fix.
+val shadowedNfsClientEntries = mapOf(
+    "com/emc/ecs/nfsclient/network/RecordMarkingUtil.class"
+        to "2c399221b6a741118281c91db8375957cc0f6e86b06f1843ca048b93d2871677",
+    "com/emc/ecs/nfsclient/network/RPCRecordDecoder.class"
+        to "15ea3e73a4988465d08b6e8b2057814d0eed68692877eacd1d5dbc6e14fb6c02",
+)
+
+val stripShadowedNfsClient = tasks.register<Jar>("stripShadowedNfsClient") {
+    val originalJars = files(nfsClientOriginal)
+    val pins = shadowedNfsClientEntries
+    from(originalJars.elements.map { jars -> jars.map { jar -> zipTree(jar.asFile) } })
+    pins.keys.forEach { entry -> exclude(entry) }
+    // The Jar task writes its own manifest, so the incoming one would be a duplicate entry.
+    exclude("META-INF/MANIFEST.MF")
+    // The guard below runs in doFirst, so it runs only when the task is out of date, and the
+    // CopySpec's tracked source carries neither the pinned hashes nor - exclude filters it - the
+    // pinned entries' bytes. Declaring the pins and the whole resolved jars restores both, so a
+    // pin edit alone, or a jar doctored only in those entries, reruns the check.
+    inputs.property("shadowedNfsClientEntries", pins)
+    inputs.files(originalJars)
+        .withPropertyName("nfsClientOriginalJars")
+        .withPathSensitivity(PathSensitivity.NONE)
+    val vendoredShadowRoot = layout.projectDirectory.dir("src/main/java")
+    val vendoredShadowSources = files(
+        pins.keys.map { entry ->
+            vendoredShadowRoot.file("${entry.removeSuffix(".class")}.java").asFile
+        }
+    )
+    // The pins alone leave the source the guard protects untracked, so deleting it read
+    // UP-TO-DATE and the guard never ran.
+    inputs.files(vendoredShadowSources)
+        .withPropertyName("vendoredShadowSources")
+        .withPathSensitivity(PathSensitivity.NONE)
+    archiveFileName.set("nfs-client-stripped.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("shadowed-libs"))
+    doFirst {
+        val jars = originalJars.files
+        val resolved = jars.joinToString(", ") { jar -> jar.name }
+        pins.forEach { (entryName, expectedHash) ->
+            val vendoredPath = "${entryName.removeSuffix(".class")}.java"
+            val vendored = "app/src/main/java/$vendoredPath"
+            if (!vendoredShadowRoot.file(vendoredPath).asFile.exists()) {
+                throw GradleException(
+                    "$vendored is gone, but $entryName is still pinned here, so the repack still " +
+                        "strips it and nothing replaces it: R8 fails the release build, while a " +
+                        "debug build links lazily and dies at runtime inside " +
+                        "ClientIOHandler.messageReceived as a closed connection. Restore " +
+                        "$vendored from git, or - if the shadow is deliberately gone - delete " +
+                        "its entry here too, and - once no entries are left - this task and the " +
+                        "nfsClientOriginal configuration, and depend on com.emc.ecs:nfs-client " +
+                        "directly again."
+                )
+            }
+            val carriers = jars.mapNotNull { jar ->
+                ZipFile(jar).use { zip ->
+                    // A duplicate entry name, where getEntry hashes one copy and the exclude
+                    // strips both, is dependency verification's threat, not this guard's.
+                    zip.getEntry(entryName)?.let { entry ->
+                        val digest = MessageDigest.getInstance("SHA-256")
+                        zip.getInputStream(entry).use { bytes ->
+                            val chunk = ByteArray(8192)
+                            while (true) {
+                                val read = bytes.read(chunk)
+                                if (read < 0) break
+                                digest.update(chunk, 0, read)
+                            }
+                        }
+                        jar.name to digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+                    }
+                }
+            }
+            if (carriers.isEmpty()) {
+                throw GradleException(
+                    "$entryName is missing from the resolved nfs-client jar ($resolved), so the " +
+                        "shadow in $vendored now shadows nothing. Diff $vendored against the new " +
+                        "upstream: if the class only moved, point shadowedNfsClientEntries at its " +
+                        "new path and re-pin; if it is gone because the library was repaired, " +
+                        "delete $vendored and its entry here, and - once no entries are left - " +
+                        "this task and the nfsClientOriginal configuration, and depend on " +
+                        "com.emc.ecs:nfs-client directly again."
+                )
+            }
+            if (carriers.size > 1) {
+                val listed = carriers.joinToString(", ") { (jar, hash) -> "$jar: SHA-256 $hash" }
+                throw GradleException(
+                    "$entryName is carried by ${carriers.size} of the jars nfsClientOriginal " +
+                        "resolved ($listed), and one pin can only speak for one copy: the exclude " +
+                        "above strips this entry from every jar, so a second, differing copy would " +
+                        "be stripped and never hashed and this guard would still report green. " +
+                        "nfsClientOriginal is meant to resolve exactly one jar - it is " +
+                        "non-transitive with a single coordinate - so remove the coordinate that " +
+                        "brought in the extra jar; if both jars genuinely have to stay, pin every " +
+                        "copy of this entry rather than the first one found."
+                )
+            }
+            val (jarName, actualHash) = carriers.single()
+            if (actualHash != expectedHash) {
+                throw GradleException(
+                    "$entryName in the resolved nfs-client jar ($jarName) no longer matches the " +
+                        "pinned bytes: expected SHA-256 $expectedHash, got $actualHash. Upstream " +
+                        "changed this class. Diff $vendored against the new upstream: if the " +
+                        "defect is fixed there, delete $vendored and its entry here rather than " +
+                        "letting our copy revert the fix; if it is not, port the other upstream " +
+                        "changes into $vendored and update the pin to $actualHash."
+                )
+            }
+        }
+    }
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.google.android.material:material:1.14.0")
-    implementation("com.emc.ecs:nfs-client:1.1.0")
+    nfsClientOriginal("com.emc.ecs:nfs-client:1.1.0")
+    implementation(files(stripShadowedNfsClient))
+    // The stripped jar arrives as a file, so the three runtime dependencies the nfs-client POM
+    // declares have to be named here. netty is the version the POM declares; commons-lang3 and
+    // slf4j-api are bumps off its 3.12.0 and 1.7.36, because naming them made lint's
+    // NewerVersionAvailable fire and this project's gate is zero new lint findings.
+    implementation("io.netty:netty:3.10.6.Final")
+    implementation("org.apache.commons:commons-lang3:3.20.0")
+    implementation("org.slf4j:slf4j-api:2.0.19")
     // Server library reused as a client: it carries the NFSv4.1 XDR types and
     // CompoundBuilder. Berkeley DB backs only its server-side client store.
     implementation("org.dcache:nfs4j-core:0.28.5") {

@@ -10,13 +10,11 @@ import java.security.MessageDigest
 import java.util.zip.ZipFile
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
     namespace = "app.mammon"
     compileSdk = 35
-    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "app.mammon"
@@ -139,7 +137,7 @@ kotlin {
 // copies of RecordMarkingUtil and RPCRecordDecoder live in app/src/main/java. D8 rejects two
 // definitions of one class, so the jar is repacked without those entries, with coordinates left
 // as a declaration to bump.
-val nfsClientOriginal: Configuration by configurations.creating { isTransitive = false }
+val nfsClientOriginal = configurations.create("nfsClientOriginal") { isTransitive = false }
 
 // SHA-256 of each entry's uncompressed bytes as published in com.emc.ecs:nfs-client:1.1.0.
 // Pinning content, not presence, is what makes an upstream repair visible: a fixed class keeps

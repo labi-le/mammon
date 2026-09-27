@@ -22,8 +22,8 @@ nix-shell --run './gradlew :app:lintDebug'
 | `app/src/main/java/com/emc/ecs/nfsclient/network/` | Two vendored classes, in their upstream package so they shadow the library's: `RecordMarkingUtil`, Apache-2.0 text with the record-mark arithmetic corrected and the reassembly's output offset tracked rather than left to `Xdr.skip` to pad, and `RPCRecordDecoder`, the same text holding each fragment's bytes itself instead of trusting netty's cumulation buffer to still hold them, under a 2 MiB record cap. AGP compiles this root beside the Kotlin one with no source-set configuration; `stripShadowedNfsClient` in `app/build.gradle.kts` removes both copies from the jar and pins both by SHA-256 |
 | `app/src/main/res/` | Resources: M3 theme (`Theme.Mammon`), strings, adaptive launcher icons |
 | `app/build.gradle.kts` | Module build config: `applicationId app.mammon`, minSdk 26, compile/target SDK 35 |
-| `gradle/wrapper/` | Gradle wrapper (8.14.4); `gradlew` is the entry point |
-| `shell.nix` | Dev shell: JDK 17 + Android SDK; every command runs through it |
+| `gradle/wrapper/` | Gradle wrapper (9.6.0); `gradlew` is the entry point |
+| `shell.nix` | Dev shell: JDK 17 + Android SDK platform 35 and build tools 36.0.0; every command runs through it |
 | `.github/workflows/` | CI: build + release on `v*` tags, dependabot (gradle), stale-issue handling |
 | `magisk-module/` | Standalone Magisk module (`mammon_fsloader`): loads fuse/nfs kernel modules at boot, logs to `load.log`; packaged separately as `mammon-fsloader-*.zip`, and into the app as the `mammon-module.zip` asset by `packModuleZip` in `app/build.gradle.kts` (the Install-module button hands that zip to Magisk) |
 | `AGENTS.md` | This file — orientation and mandatory workflow summary |

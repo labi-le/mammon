@@ -10,8 +10,7 @@
 let
   androidComposition = pkgs.androidenv.composeAndroidPackages {
     platformVersions = [ "35" ];
-    # AGP refuses to run without exactly this build-tools revision.
-    buildToolsVersions = [ "35.0.0" ];
+    buildToolsVersions = [ "36.0.0" ];
   };
   androidSdk = androidComposition.androidsdk;
   sdkRoot = "${androidSdk}/libexec/android-sdk";

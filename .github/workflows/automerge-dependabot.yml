@@ -15,34 +15,42 @@ jobs:
   auto-merge:
     name: DependabotMerge
     runs-on: ubuntu-latest
-    if: >
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    if: >-
+      ${{ github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_repository.full_name == github.repository }}
     steps:
       - name: Merge the Dependabot PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          number=$(gh pr list --repo "$REPO" --head "$HEAD" \
-            --state open --json number --jq '.[0].number')
+          set -euo pipefail
+
+          number=$(gh pr list --app dependabot --head "$HEAD_BRANCH" --state open \
+            --json number,author,headRefOid,headRepository |
+            jq -r --arg sha "$HEAD_SHA" --arg repo "$GH_REPO" \
+              'map(select(.author.login == "app/dependabot" and .author.is_bot == true and .headRefOid == $sha and .headRepository.nameWithOwner == $repo)) | .[0].number // empty')
+
           if [ -z "$number" ]; then
-            echo "no open PR for $HEAD, nothing to merge"
+            echo "no open dependabot PR at tested head $HEAD_SHA"
             exit 0
           fi
-          if gh pr merge --merge --delete-branch --repo "$REPO" "$number"; then
+
+          if gh pr merge --merge --delete-branch --match-head-commit "$HEAD_SHA" "$number"; then
             exit 0
           fi
-          # A branch whose base moved on is merged three-way, and GITHUB_TOKEN may
-          # not write a workflow file that way. Dependabot may: its rebase lands a
-          # fresh head, whose Build run brings us back here against a current base.
-          # Asked once only - a second refusal is a different cause and stays red.
-          if gh pr view --repo "$REPO" "$number" --json comments \
-            --jq '.comments[].body' | grep -qx '@dependabot rebase'; then
+          current=$(gh pr view "$number" --json state,headRefOid)
+          if ! jq -e --arg sha "$HEAD_SHA" '.state == "OPEN" and .headRefOid == $sha' <<<"$current" >/dev/null; then
+            echo "PR #${number} is closed or changed since Build; nothing to rebase"
+            exit 0
+          fi
+          comments=$(gh pr view "$number" --json comments --jq '.comments[].body')
+          if grep -x '@dependabot rebase' <<<"$comments" >/dev/null; then
             echo "::error::#${number} still refuses to merge after a rebase"
             exit 1
           fi
           echo "::notice::merge refused for #${number}; asking dependabot to rebase"
-          gh pr comment --repo "$REPO" "$number" --body "@dependabot rebase"
-        env:
-          REPO: ${{ github.repository }}
-          HEAD: ${{ github.event.workflow_run.head_branch }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          gh pr comment "$number" --body "@dependabot rebase"

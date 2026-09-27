@@ -45,7 +45,7 @@ jobs:
       - name: Install SDK packages
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platforms;android-35" "build-tools;36.0.0"
 
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
@@ -63,7 +63,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          bt="${ANDROID_HOME}/build-tools/35.0.0"
+          bt="${ANDROID_HOME}/build-tools/36.0.0"
           mkdir -p dist
           in="$(ls app/build/outputs/apk/release/*.apk | head -1)"
           if [ -n "${KEYSTORE_BASE64:-}" ]; then

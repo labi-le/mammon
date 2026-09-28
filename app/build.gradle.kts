@@ -264,7 +264,7 @@ dependencies {
     // NewerVersionAvailable fire and this project's gate is zero new lint findings.
     implementation("io.netty:netty:3.10.6.Final")
     implementation("org.apache.commons:commons-lang3:3.20.0")
-    implementation("org.slf4j:slf4j-api:2.0.19")
+    implementation("org.slf4j:slf4j-api:2.0.20")
     // Server library reused as a client: it carries the NFSv4.1 XDR types and
     // CompoundBuilder. Berkeley DB backs only its server-side client store.
     implementation("org.dcache:nfs4j-core:0.28.5") {

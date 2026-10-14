@@ -263,7 +263,7 @@ dependencies {
     // slf4j-api are bumps off its 3.12.0 and 1.7.36, because naming them made lint's
     // NewerVersionAvailable fire and this project's gate is zero new lint findings.
     implementation("io.netty:netty:3.10.6.Final")
-    implementation("org.apache.commons:commons-lang3:3.20.0")
+    implementation("org.apache.commons:commons-lang3:3.21.0")
     implementation("org.slf4j:slf4j-api:2.0.20")
     // Server library reused as a client: it carries the NFSv4.1 XDR types and
     // CompoundBuilder. Berkeley DB backs only its server-side client store.

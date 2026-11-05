@@ -253,7 +253,7 @@ val stripShadowedNfsClient = tasks.register<Jar>("stripShadowedNfsClient") {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.google.android.material:material:1.14.0")
     nfsClientOriginal("com.emc.ecs:nfs-client:1.1.0")
